@@ -1,0 +1,12 @@
+# Render Blueprint — one-click deploy of the Projector demo from this repo.
+# Render → New → Blueprint → pick this repo. Builds the root Dockerfile and
+# injects $PORT (which the Dockerfile's CMD honors). Free plan = spins down
+# after ~15 min idle, wakes on the next request (~1 min cold start).
+services:
+  - type: web
+    name: projector-demo
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true
