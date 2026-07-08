@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Projector</title>
+  <link rel="stylesheet" href="./style.css" />
+  <!-- Three.js hosted locally (web/vendor): works offline. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/three.module.js",
+      "three/addons/": "./vendor/three/addons/"
+    }
+  }
+  </script>
+  <script type="module" src="./src/app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- ======================= top bar ======================= -->
+    <header class="topbar">
+      <div class="brand">
+        <svg class="beam" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <rect x="1" y="9" width="7" height="6" rx="1" />
+          <polygon class="light" points="8,10 23,4 23,20 8,14" />
+        </svg>
+        Projector
+      </div>
+      <button id="btn-open" class="tbtn">Open…</button>
+      <div class="spacer"></div>
+      <div id="status" class="status"></div>
+    </header>
+
+    <!-- ======================= body: rail | workspace ======================= -->
+    <div class="body">
+      <aside class="rail">
+        <section class="panel">
+          <h2>Sequences</h2>
+          <div id="sequences" class="sequences"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Channels</h2>
+          <div id="channels" class="channels"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Views</h2>
+          <div id="views-menu" class="views-menu"></div>
+        </section>
+
+        <section class="panel" id="sync-panel" hidden
+                 title="Time model: native event timeline, or every channel resampled onto a reference clock">
+          <h2>Time</h2>
+          <label class="mode-row">clock
+            <select id="sync-ref"></select>
+          </label>
+          <label class="mode-row" id="sync-tol-row">tolerance
+            <input id="sync-tol" type="number" step="0.05" value="0.1" class="opt-num" />
+          </label>
+          <button id="sync-apply" class="tbtn primary">Apply</button>
+        </section>
+
+        <section class="panel" id="plugins-panel"
+                 title="Per-frame transforms loaded from your Python scripts — run in memory, never written to the dataset">
+          <h2>Transforms</h2>
+          <div id="plugins-list" class="plugins-list"></div>
+          <button id="btn-load-script" class="tbtn">Load script</button>
+          <button id="btn-apply-plugins" class="tbtn primary" hidden>Apply</button>
+        </section>
+
+        <section class="panel" id="bookmarks-panel" hidden>
+          <h2>Bookmarks</h2>
+          <div id="bookmarks" class="bookmarks"></div>
+        </section>
+
+        <section class="panel" id="accum-panel" hidden
+                 title="Accumulate past/future frames, registered by pose into the current frame (applies to cloud views)">
+          <h2>Accumulate</h2>
+          <div class="row">
+            <label class="opt">past <input id="accum-back" type="number" min="0" max="25" value="0" class="opt-num" /></label>
+            <label class="opt">future <input id="accum-fwd" type="number" min="0" max="25" value="0" class="opt-num" /></label>
+          </div>
+        </section>
+
+        <section class="panel" id="frames-panel" hidden
+                 title="Last event time of each channel (async rigs tick at their own rate)">
+          <h2>Frames</h2>
+          <div id="frames" class="frames"></div>
+        </section>
+      </aside>
+
+      <div class="gutter gutter-v" data-gutter="rail"></div>
+
+      <div class="workspace">
+        <div class="views" id="views">
+          <div class="addbar">
+            <select id="add-kind"></select>
+            <button id="add-view" class="btn">+ Add view</button>
+          </div>
+          <div class="views-stack" id="views-stack"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================= timeline (footer) ======================= -->
+    <div id="tracks" class="tracks" hidden>
+      <div id="tracks-labels" class="tracks-labels"></div>
+      <canvas id="tracks-canvas"></canvas>
+    </div>
+    <footer class="footer">
+      <button id="btn-prev" class="tbtn" title="Previous frame (←)">⏮</button>
+      <button id="btn-play" class="tbtn" title="Play / pause (space)">▶</button>
+      <button id="btn-next" class="tbtn" title="Next frame (→)">⏭</button>
+      <button id="btn-tracks" class="tbtn" title="Per-channel event tracks">Tracks</button>
+      <select id="speed" class="speed" title="Playback speed">
+        <option value="0.5">×0.5</option>
+        <option value="1" selected>×1</option>
+        <option value="2">×2</option>
+        <option value="5">×5</option>
+      </select>
+      <button id="btn-loop-a" class="tbtn" title="Loop start: set to the current frame (again: clear)">A</button>
+      <button id="btn-loop-b" class="tbtn" title="Loop end: set to the current frame (again: clear)">B</button>
+      <button id="btn-mark" class="tbtn" title="Bookmark the current frame (again: remove)">Mark</button>
+      <input id="frame" type="range" min="0" max="0" value="0" />
+      <span id="frame-label" class="muted">frame 1 / 1</span>
+    </footer>
+  </div>
+
+  <!-- ======================= open dataset (modal) ======================= -->
+  <div id="fs-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <div class="modal-head"><span id="fs-title">Open an apairo dataset</span>
+        <button id="fs-close" class="icon-btn">✕</button></div>
+      <input id="fs-input" class="fs-input" type="text" spellcheck="false"
+             placeholder="/path/to/dir   (Enter: go · Tab: complete)" />
+      <div id="fs-list" class="fs-list"></div>
+      <div id="fs-form" class="fs-form" hidden>
+        <div id="fs-ds-name" class="fs-ds-name"></div>
+        <div id="fs-channels" class="fs-channels"></div>
+        <div class="row">
+          <label class="opt">every <input id="fs-every" type="number" step="1" min="1" value="1" class="opt-num" /></label>
+          <button id="fs-open" class="tbtn primary">Open dataset</button>
+        </div>
+      </div>
+      <div id="fs-error" class="fs-error"></div>
+    </div>
+  </div>
+</body>
+</html>
