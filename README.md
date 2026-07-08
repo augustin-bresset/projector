@@ -8,9 +8,9 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Live demo](https://img.shields.io/badge/demo-%F0%9F%A4%97%20Hugging%20Face-ffcc00)](https://huggingface.co/spaces/SmaugC137/projector)
+[![Live demo](https://img.shields.io/badge/demo-live-ffb000)](https://projector-demo.onrender.com)
 
-[**▶ Live demo**](https://huggingface.co/spaces/SmaugC137/projector) · [**Sibling tool: Toaster**](https://github.com/augustin-bresset/toaster) · [**Sibling tool: Splasher**](https://github.com/augustin-bresset/splasher) · [Quick start](#quick-start) · [Design & roadmap](DESIGN.md)
+[**▶ Live demo**](https://projector-demo.onrender.com) · [**Sibling tool: Toaster**](https://github.com/augustin-bresset/toaster) · [**Sibling tool: Splasher**](https://github.com/augustin-bresset/splasher) · [Quick start](#quick-start) · [Design & roadmap](DESIGN.md)
 
 </div>
 
