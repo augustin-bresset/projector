@@ -1,0 +1,62 @@
+[project]
+name = "projector"
+version = "0.1.0"
+description = "Interactive viewer for multi-sensor robotics sequences: timeline, 3D/2D/BEV views, label comparison"
+readme = "README.md"
+authors = [{ name = "Augustin Bresset", email = "augustin.bresset@gmail.com" }]
+requires-python = ">=3.11"
+keywords = ["visualization", "lidar", "point-cloud", "bev", "robotics", "dataset", "viewer"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+# Core + engine depend only on numpy. The fronts are extras.
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+# apairo is ONE input adapter — core/engine never import it.
+apairo = [
+    "apairo @ git+https://github.com/apairo-robotics/apairo.git@v0.5.0",
+    "PyYAML",
+]
+# Web server + API. uvicorn[standard] ships the websocket protocol the frame
+# stream needs (plain uvicorn 404s the /ws/frames handshake).
+api = [
+    "fastapi",
+    "uvicorn[standard]",
+]
+# Desktop app: the web front inside a native webview.
+app = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pywebview[qt]",
+]
+
+[project.scripts]
+projector = "projector.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "httpx2", "ruff"]  # httpx2: required by fastapi.testclient (API tests)
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["B008"]  # `= Body(...)` in defaults is the intended FastAPI idiom
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["projector"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
