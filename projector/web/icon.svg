@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="13" fill="#100e0b"/>
+  <!-- projector beam -->
+  <polygon points="26,32 62,15 62,49" fill="#ffb000" opacity="0.16"/>
+  <!-- film reel -->
+  <g transform="translate(26,32)">
+    <circle r="17" fill="#ffb000"/>
+    <circle r="17" fill="none" stroke="#ffd166" stroke-width="2.4"/>
+    <circle r="5" fill="#100e0b"/>
+    <circle cx="0"    cy="-10.5" r="3.3" fill="#100e0b"/>
+    <circle cx="10"   cy="-3.3"  r="3.3" fill="#100e0b"/>
+    <circle cx="6.2"  cy="8.5"   r="3.3" fill="#100e0b"/>
+    <circle cx="-6.2" cy="8.5"   r="3.3" fill="#100e0b"/>
+    <circle cx="-10"  cy="-3.3"  r="3.3" fill="#100e0b"/>
+  </g>
+</svg>

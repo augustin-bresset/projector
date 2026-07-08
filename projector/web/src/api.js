@@ -62,13 +62,6 @@ export const api = {
     const d = await getJson(`/api/trajectory?seq=${encodeURIComponent(seq)}`);
     return decodeArray(d.points);   // {data, shape:[N,3]} or null
   },
-  timeline: async (seq) => {
-    const d = await getJson(`/api/timeline?seq=${encodeURIComponent(seq)}`);
-    if (!d.channels) return null;
-    const channels = {};
-    for (const [k, v] of Object.entries(d.channels)) channels[k] = decodeArray(v);
-    return { channels, ticks: decodeArray(d.ticks) };
-  },
   // User transforms (scripts imported server-side, executed in memory).
   plugins: () => getJson("/api/plugins"),
   pluginsLoad: (path) => postJson("/api/plugins/load", { path }),

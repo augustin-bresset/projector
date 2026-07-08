@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Projector</title>
+  <link rel="icon" type="image/svg+xml" href="./icon.svg" />
   <link rel="stylesheet" href="./style.css" />
   <!-- Three.js hosted locally (web/vendor): works offline. -->
   <script type="importmap">
@@ -104,16 +105,10 @@
       </div>
     </div>
 
-    <!-- ======================= timeline (footer) ======================= -->
-    <div id="tracks" class="tracks" hidden>
-      <div id="tracks-labels" class="tracks-labels"></div>
-      <canvas id="tracks-canvas"></canvas>
-    </div>
     <footer class="footer">
       <button id="btn-prev" class="tbtn" title="Previous frame (←)">⏮</button>
       <button id="btn-play" class="tbtn" title="Play / pause (space)">▶</button>
       <button id="btn-next" class="tbtn" title="Next frame (→)">⏭</button>
-      <button id="btn-tracks" class="tbtn" title="Per-channel event tracks">Tracks</button>
       <select id="speed" class="speed" title="Playback speed">
         <option value="0.5">×0.5</option>
         <option value="1" selected>×1</option>

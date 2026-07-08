@@ -1,5 +1,5 @@
 // Projector front — bootstrap, rail (sequences / channels / views / time /
-// bookmarks / accumulate / frames), timeline with per-channel tracks, A-B loop,
+// bookmarks / accumulate / frames), A-B loop,
 // Open-dataset modal with shell-style Tab completion, per-dataset session state.
 //
 // Frames arrive over the binary websocket (src/ws.js) with client-side caching and
@@ -32,7 +32,6 @@ let tsSeen = {};         // channel → last event timestamp
 let loopA = null;        // A-B loop bounds (frame indices in the current sequence)
 let loopB = null;
 let bookmarks = [];      // [{seq, index}]
-let timeline = null;     // {channels: {name: Float64Array}, ticks: Float64Array|null}
 let stateTimer = null;   // debounced session-state save
 
 function applyFrame(frame) {
@@ -40,7 +39,6 @@ function applyFrame(frame) {
   panels.update(frame);
   updateFramesPanel(frame);
   syncFooter();
-  drawTracks(frame);
 }
 
 async function show(i) {
@@ -84,100 +82,6 @@ function updateFramesPanel(frame) {
     row.append(name, val);
     box.appendChild(row);
   }
-}
-
-// --------------------------------------------------- per-channel tracks (footer)
-function loadTimeline(id) {
-  timeline = null;
-  $("tracks").hidden = true;
-  api.timeline(id).then((tl) => {
-    if (seq !== id || !tl || !tl.channels) return;
-    timeline = tl;
-    $("tracks").hidden = !$("btn-tracks").classList.contains("active");
-    drawTracks(null);
-  }).catch(() => {});
-}
-
-function currentTime(frame) {
-  if (timeline && timeline.ticks) return timeline.ticks.data[index];
-  if (frame && frame.timestamps) {
-    const vals = Object.values(frame.timestamps);
-    if (vals.length) return Math.max(...vals);
-  }
-  return null;
-}
-
-function drawTracks(frame) {
-  const strip = $("tracks");
-  if (strip.hidden || !timeline) return;
-  const names = Object.keys(timeline.channels).sort();
-  const canvas = $("tracks-canvas");
-  const dpr = window.devicePixelRatio || 1;
-  const W = strip.clientWidth - 110, H = names.length * 16 + 4;
-  canvas.style.height = `${H}px`;
-  canvas.width = Math.max(1, W * dpr);
-  canvas.height = Math.max(1, H * dpr);
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, W, H);
-
-  let t0 = Infinity, t1 = -Infinity;
-  for (const n of names) {
-    const a = timeline.channels[n].data;
-    if (a.length) { t0 = Math.min(t0, a[0]); t1 = Math.max(t1, a[a.length - 1]); }
-  }
-  if (!(t1 > t0)) return;
-  const x = (t) => ((t - t0) / (t1 - t0)) * W;
-
-  const labels = $("tracks-labels");
-  labels.replaceChildren();
-  names.forEach((n, r) => {
-    const lab = document.createElement("div");
-    lab.textContent = pretty(n);
-    labels.appendChild(lab);
-    const a = timeline.channels[n].data;
-    ctx.strokeStyle = "rgba(255,176,0,0.55)";
-    ctx.beginPath();
-    const y0 = r * 16 + 3, y1 = r * 16 + 13;
-    const step = Math.max(1, Math.floor(a.length / W));   // ≤ ~1 tick per px
-    for (let i = 0; i < a.length; i += step) {
-      const px = x(a[i]);
-      ctx.moveTo(px, y0);
-      ctx.lineTo(px, y1);
-    }
-    ctx.stroke();
-  });
-
-  const t = currentTime(frame);
-  if (t !== null) {
-    ctx.strokeStyle = "#ece7dd";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(x(t), 0);
-    ctx.lineTo(x(t), H);
-    ctx.stroke();
-  }
-}
-
-function tracksSeek(e) {
-  if (!timeline || !timeline.ticks) return;      // index↔time only 1:1 on event timelines
-  const canvas = $("tracks-canvas");
-  const r = canvas.getBoundingClientRect();
-  const names = Object.keys(timeline.channels);
-  let t0 = Infinity, t1 = -Infinity;
-  for (const n of names) {
-    const a = timeline.channels[n].data;
-    if (a.length) { t0 = Math.min(t0, a[0]); t1 = Math.max(t1, a[a.length - 1]); }
-  }
-  const t = t0 + ((e.clientX - r.left) / r.width) * (t1 - t0);
-  const ticks = timeline.ticks.data;
-  let lo = 0, hi = ticks.length - 1;             // nearest tick by bisection
-  while (hi - lo > 1) {
-    const mid = (lo + hi) >> 1;
-    if (ticks[mid] < t) lo = mid; else hi = mid;
-  }
-  setPlaying(false);
-  show(Math.abs(ticks[lo] - t) <= Math.abs(ticks[hi] - t) ? lo : hi);
 }
 
 // -------------------------------------------------------------- A-B loop
@@ -278,7 +182,6 @@ function setSequence(id, at = 0) {
   setPlaying(false);
   show(at);
   loadTrajectory(id);
-  loadTimeline(id);
 }
 
 async function loadTrajectory(id) {
@@ -392,7 +295,6 @@ async function initSession(s) {
   nFrames = 1;
   reqId++;
   loopA = loopB = null;
-  timeline = null;
   buildRail();
 
   if (panels) panels.dispose();
@@ -747,12 +649,6 @@ async function boot() {
   $("btn-loop-a").onclick = () => setLoopBound("a");
   $("btn-loop-b").onclick = () => setLoopBound("b");
   $("btn-mark").onclick = toggleBookmark;
-  $("btn-tracks").onclick = () => {
-    $("btn-tracks").classList.toggle("active");
-    $("tracks").hidden = !$("btn-tracks").classList.contains("active") || !timeline;
-    drawTracks(null);
-  };
-  $("tracks-canvas").addEventListener("mousedown", tracksSeek);
   $("sync-apply").onclick = applySync;
 
   $("btn-open").onclick = () => openModal("dataset");

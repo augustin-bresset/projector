@@ -190,19 +190,7 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 .gutter-h { flex: 0 0 8px; cursor: row-resize; }
 .gutter-h::after { height: 2px; width: 40px; }
 
-/* ----------------------------------------------------------- footer (timeline) */
-.tracks {
-  display: flex; gap: 8px; padding: 6px 14px;
-  background: var(--panel); border: 1px solid var(--line-strong);
-}
-.tracks[hidden] { display: none; }
-.tracks-labels {
-  flex: 0 0 90px; display: flex; flex-direction: column;
-  font-family: var(--mono); font-size: 10px; color: var(--muted);
-}
-.tracks-labels div { height: 16px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#tracks-canvas { flex: 1; cursor: pointer; }
-
+/* ------------------------------------------------------------------- footer */
 .footer {
   display: flex; align-items: center; gap: 12px; padding: 0 14px; min-height: 44px;
   background: var(--panel); border: 1px solid var(--line-strong);
