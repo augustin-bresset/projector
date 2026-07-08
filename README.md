@@ -1,3 +1,23 @@
+---
+title: Projector
+emoji: 🎬
+colorFrom: yellow
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Replay multi-sensor robotics sequences with label comparison
+---
+
+<!-- The YAML block above is Hugging Face Space metadata. It lives ONLY on this
+     `hf` branch (pushed to the Space), so it never appears on GitHub's main. -->
+
+> **Live demo** — this Hugging Face Space runs `projector demo --serve` (the synthetic
+> source) inside a Docker container: parallel 3D / 2D / BEV views, live display, and
+> confusion coloring are all interactive. The demo serves a **single shared session**,
+> so concurrent visitors drive the same viewer. See the
+> [GitHub repo](https://github.com/augustin-bresset/projector) to run it locally.
+
 <div align="center">
 
 <img src="projector/web/icon.svg" alt="Projector logo" width="120" />
