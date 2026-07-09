@@ -150,11 +150,15 @@ def test_event_timeline_groups_cotimestamped_events():
     assert set(s2.data) == {"lidar", "trav", "camera"}
     assert s2.channel_timestamps["camera"] == 0.05
     assert s2.channel_timestamps["lidar"] == 0.1
+    # per-channel event counters (apairo_rr-style): each sensor keeps its own
+    assert s2.channel_indices == {"lidar": 1, "trav": 1, "camera": 0}
 
     # end to end: the labeling classifies as LABELS of lidar without synchronizing
     src = ApairoSource({"seq": tl})
     spec = next(s for s in src.channels() if s.name == "trav")
     assert spec.kind is ChannelKind.LABELS and spec.of == "lidar"
+    f2 = src.frame("seq", 2)
+    assert f2.indices == {"lidar": 1, "trav": 1, "camera": 0}
 
 
 def test_mount_tf_applied_to_clouds():

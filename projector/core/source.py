@@ -69,10 +69,15 @@ class Frame:
     `timestamps` is `None` for a synchronous source. On an async rig each present
     channel maps to its own timestamp, and a channel may be absent from a frame
     (the front keeps its last value on screen).
+
+    `indices` (async sources only) maps each present channel to its own event
+    index — that sensor's counter, apairo_rr-style — so a view can show which of
+    ITS frames it displays. None when the global index answers for every channel.
     """
 
     channels: dict[str, np.ndarray]
     timestamps: dict[str, float] | None = None
+    indices: dict[str, int] | None = None
 
     def __getitem__(self, key: str) -> np.ndarray:
         return self.channels[key]

@@ -193,7 +193,7 @@ def apply_transforms(frame: Frame, active: list[ActiveTransform]) -> Frame:
             t.last_error = f"unsupported output: {type(out).__name__}" + (
                 f" shape {out.shape}" if isinstance(out, np.ndarray) else ""
             )
-    return Frame(channels=channels, timestamps=frame.timestamps)
+    return Frame(channels=channels, timestamps=frame.timestamps, indices=frame.indices)
 
 
 def virtual_specs(active: list[ActiveTransform]) -> list[ChannelSpec]:

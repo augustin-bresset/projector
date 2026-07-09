@@ -145,7 +145,7 @@ class Player:
                 for k, cp in zip(chunks, cloud_chunks, strict=True)
             ]
             channels[name] = np.concatenate(sized)
-        return Frame(channels=channels, timestamps=frame.timestamps)
+        return Frame(channels=channels, timestamps=frame.timestamps, indices=frame.indices)
 
     # ------------------------------------------------------------- decimation
     def _decimate(self, frame: Frame) -> Frame:

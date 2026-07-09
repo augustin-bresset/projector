@@ -78,6 +78,7 @@ def frame_to_dict(seq: str, index: int, n_frames: int, frame: Frame) -> dict:
         "index": index,
         "n_frames": n_frames,
         "timestamps": frame.timestamps,
+        "indices": frame.indices,
         "channels": {k: encode_array(v) for k, v in frame.channels.items()},
     }
 
@@ -102,6 +103,7 @@ def pack_frame(seq: str, index: int, n_frames: int, frame: Frame, back: int = 0,
         "back": back,
         "fwd": fwd,
         "timestamps": frame.timestamps,
+        "indices": frame.indices,  # per-channel event indices (async sources)
         "channels": [],
     }
     blobs: list[bytes] = []

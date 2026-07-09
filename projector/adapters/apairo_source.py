@@ -152,7 +152,9 @@ class ApairoSource:
             timestamps = {k: float(per_channel[k]) for k in channels if k in per_channel}
         else:
             timestamps = None if ts is None else {k: float(ts) for k in channels}
-        return Frame(channels=channels, timestamps=timestamps)
+        per_index = getattr(s, "channel_indices", None)  # per-sensor event counters
+        indices = None if per_index is None else {k: int(per_index[k]) for k in channels if k in per_index}
+        return Frame(channels=channels, timestamps=timestamps, indices=indices)
 
     def timeline(self, seq: str) -> dict | None:
         """Per-channel event timestamps + tick times of a sequence (footer tracks).
@@ -409,12 +411,14 @@ class ApairoSource:
 
 
 class _SparseSyncSample:
-    """Duck-typed apairo sample: `.data`, `.timestamp`, plus per-channel timestamps."""
+    """Duck-typed apairo sample: `.data`, `.timestamp`, plus per-channel timestamps
+    and per-channel event indices (each sensor's own counter, apairo_rr-style)."""
 
-    def __init__(self, data: dict, timestamp, channel_timestamps: dict):
+    def __init__(self, data: dict, timestamp, channel_timestamps: dict, channel_indices: dict | None = None):
         self.data = data
         self.timestamp = timestamp
         self.channel_timestamps = channel_timestamps
+        self.channel_indices = channel_indices or {}
 
 
 class _EventTimeline:
@@ -476,10 +480,12 @@ class _EventTimeline:
         group = self._ticks[index]
         data: dict = {}
         cts: dict[str, float] = {}
+        cidx: dict[str, int] = {}
         for t, name, j in group:
             ds, _ts = self._channels[name]
             data[name] = ds[j].data[name]
             cts[name] = t
+            cidx[name] = j
         t0 = group[0][0]
         for name in self._carry:
             if name in data:
@@ -489,7 +495,8 @@ class _EventTimeline:
             if j >= 0:
                 data[name] = ds[j].data[name]
                 cts[name] = float(ts[j])
-        return _SparseSyncSample(data, t0, cts)
+                cidx[name] = j
+        return _SparseSyncSample(data, t0, cts, cidx)
 
 
 class _SparseSync:
@@ -526,12 +533,16 @@ class _SparseSync:
         data = dict(s.data)
         t = float(s.timestamp)
         channel_ts = {k: t for k in data}
+        # Dense channels are resampled onto the tick clock: their counter is the
+        # tick index. Sparse overlays keep their own event counter.
+        channel_idx = {k: index for k in data}
         for name, (ch_ds, ch_ts) in self._overlays.items():
             j = self._match(ch_ts, t)
             if j is not None:
                 data[name] = ch_ds[j].data[name]
                 channel_ts[name] = float(ch_ts[j])
-        return _SparseSyncSample(data, t, channel_ts)
+                channel_idx[name] = j
+        return _SparseSyncSample(data, t, channel_ts, channel_idx)
 
     def extra_samples(self) -> list[dict]:
         """One merged sample per sparse channel, at its first event's tick — so
