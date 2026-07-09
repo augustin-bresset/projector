@@ -21,8 +21,16 @@ def list_dir(path: str | None = None, files: str | None = None) -> dict:
     for child in sorted(p.iterdir()):
         if child.name.startswith("."):
             continue
-        if child.is_dir():
-            dirs.append({"name": child.name, "is_dataset": (child / ".apairo").is_dir()})
+        try:
+            is_dir = child.is_dir()
+        except OSError:
+            continue
+        if is_dir:
+            try:
+                is_dataset = (child / ".apairo").is_dir()
+            except OSError:  # not traversable (e.g. /lost+found) — still listed
+                is_dataset = False
+            dirs.append({"name": child.name, "is_dataset": is_dataset})
         elif files and child.suffix == files:
             file_list.append(child.name)
     return {

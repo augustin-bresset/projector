@@ -59,6 +59,18 @@ def test_empty_launch_and_fs(tmp_path):
     assert flags == {"plain": False, "ds": True}
     assert c.get("/api/fs?path=/nonexistent-dir-xyz").status_code == 400
 
+    # an unreadable child dir must not break the listing (Tab completion relies on it)
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o000)
+    try:
+        r = c.get(f"/api/fs?path={tmp_path}")
+        assert r.status_code == 200
+        flags = {d["name"]: d["is_dataset"] for d in r.json()["dirs"]}
+        assert flags == {"plain": False, "ds": True, "locked": False}
+    finally:
+        locked.chmod(0o755)
+
 
 def test_open_rejects_bad_path():
     c = _client()
