@@ -22,13 +22,34 @@
     <!-- ======================= top bar ======================= -->
     <header class="topbar">
       <div class="brand">
-        <svg class="beam" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-          <rect x="1" y="9" width="7" height="6" rx="1" />
-          <polygon class="light" points="8,10 23,4 23,20 8,14" />
+        <svg class="beam" viewBox="0 0 28 22" width="25" height="19" aria-hidden="true">
+          <circle class="reel" cx="7" cy="5.4" r="4.4" />
+          <circle class="hub" cx="7" cy="5.4" r="1.2" />
+          <circle class="reel small" cx="15.5" cy="7.6" r="2.9" />
+          <circle class="hub" cx="15.5" cy="7.6" r="0.9" />
+          <rect x="2.5" y="11" width="16" height="8" rx="1" />
+          <rect x="18.5" y="13" width="2.4" height="4" />
+          <polygon class="light" points="20.9,12.6 27.5,9.2 27.5,20.8 20.9,17.4" />
         </svg>
         Projector
       </div>
       <button id="btn-open" class="tbtn">Open…</button>
+      <div class="menu-wrap">
+        <button id="btn-transforms" class="tbtn">Transforms</button>
+        <div id="transforms-menu" class="menu-dropdown" hidden
+             title="Per-frame transforms loaded from your Python scripts — run in memory, never written to the dataset">
+          <div class="menu-section">
+            <h3>Scripts</h3>
+            <div id="scripts-list" class="scripts-list"></div>
+            <button id="btn-load-script" class="tbtn">Load script…</button>
+          </div>
+          <div class="menu-section">
+            <h3>Transforms</h3>
+            <div id="plugins-list" class="plugins-list"></div>
+            <button id="btn-apply-plugins" class="tbtn primary" hidden>Apply</button>
+          </div>
+        </div>
+      </div>
       <div class="spacer"></div>
       <div id="status" class="status"></div>
     </header>
@@ -36,17 +57,17 @@
     <!-- ======================= body: rail | workspace ======================= -->
     <div class="body">
       <aside class="rail">
-        <section class="panel">
+        <section class="panel" id="sequences-panel">
           <h2>Sequences</h2>
           <div id="sequences" class="sequences"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" id="channels-panel">
           <h2>Channels</h2>
           <div id="channels" class="channels"></div>
         </section>
 
-        <section class="panel">
+        <section class="panel" id="views-panel">
           <h2>Views</h2>
           <div id="views-menu" class="views-menu"></div>
         </section>
@@ -61,14 +82,6 @@
             <input id="sync-tol" type="number" step="0.05" value="0.1" class="opt-num" />
           </label>
           <button id="sync-apply" class="tbtn primary">Apply</button>
-        </section>
-
-        <section class="panel" id="plugins-panel"
-                 title="Per-frame transforms loaded from your Python scripts — run in memory, never written to the dataset">
-          <h2>Transforms</h2>
-          <div id="plugins-list" class="plugins-list"></div>
-          <button id="btn-load-script" class="tbtn">Load script</button>
-          <button id="btn-apply-plugins" class="tbtn primary" hidden>Apply</button>
         </section>
 
         <section class="panel" id="bookmarks-panel" hidden>
@@ -102,6 +115,9 @@
           </div>
           <div class="views-stack" id="views-stack"></div>
         </div>
+        <div id="intermission" hidden>
+          <div class="card"><span>Intermission</span><small>no dataset — Open…</small></div>
+        </div>
       </div>
     </div>
 
@@ -109,16 +125,13 @@
       <button id="btn-prev" class="tbtn" title="Previous frame (←)">⏮</button>
       <button id="btn-play" class="tbtn" title="Play / pause (space)">▶</button>
       <button id="btn-next" class="tbtn" title="Next frame (→)">⏭</button>
-      <select id="speed" class="speed" title="Playback speed">
-        <option value="0.5">×0.5</option>
-        <option value="1" selected>×1</option>
-        <option value="2">×2</option>
-        <option value="5">×5</option>
-      </select>
+      <label class="speed-wrap" title="Playback speed — type any value">×
+        <input id="speed" class="speed" type="number" min="0.1" max="50" step="0.1" value="1" />
+      </label>
       <button id="btn-loop-a" class="tbtn" title="Loop start: set to the current frame (again: clear)">A</button>
       <button id="btn-loop-b" class="tbtn" title="Loop end: set to the current frame (again: clear)">B</button>
       <button id="btn-mark" class="tbtn" title="Bookmark the current frame (again: remove)">Mark</button>
-      <input id="frame" type="range" min="0" max="0" value="0" />
+      <div class="filmwrap"><input id="frame" type="range" min="0" max="0" value="0" /></div>
       <span id="frame-label" class="muted">frame 1 / 1</span>
     </footer>
   </div>

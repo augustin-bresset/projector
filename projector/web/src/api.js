@@ -28,6 +28,7 @@ export function decodeFrame(d) {
     index: d.index,
     nFrames: d.n_frames,
     timestamps: d.timestamps,   // null = synchronous
+    indices: d.indices || null, // per-channel event counters (async)
     channels,                   // {name: {data: TypedArray, shape, dtype}}
   };
 }
@@ -65,6 +66,7 @@ export const api = {
   // User transforms (scripts imported server-side, executed in memory).
   plugins: () => getJson("/api/plugins"),
   pluginsLoad: (path) => postJson("/api/plugins/load", { path }),
+  pluginsUnload: (path) => postJson("/api/plugins/unload", { path }),
   pluginsActive: (active) => postJson("/api/plugins/active", { active }),
   // Open-dataset flow.
   fs: (path, files = null) => {

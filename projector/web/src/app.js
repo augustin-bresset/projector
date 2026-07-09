@@ -41,14 +41,34 @@ function applyFrame(frame) {
   syncFooter();
 }
 
+// Latest-wins scrubbing: while a fetch is in flight, newer targets only replace
+// `showTarget` — so dragging the slider far sends ONE request for where you land
+// instead of flooding the (serial) websocket queue with every intermediate frame.
+let showTarget = null;
+let showBusy = false;
+
 async function show(i) {
   if (!seq) return;
   index = Math.max(0, Math.min(i, nFrames - 1));
-  const id = ++reqId;
-  const frame = await stream.request(seq, index, accum.back, accum.fwd);
-  if (id !== reqId) return;                      // superseded while scrubbing
-  applyFrame(frame);
-  stream.prefetch(seq, index, 2, nFrames, accum.back, accum.fwd);
+  syncFooter();                                  // instant position feedback
+  showTarget = index;
+  if (showBusy) return;
+  showBusy = true;
+  try {
+    while (showTarget !== null) {
+      const target = showTarget;
+      showTarget = null;
+      const id = ++reqId;
+      const frame = await stream.request(seq, target, accum.back, accum.fwd);
+      if (id !== reqId) return;                  // playback or a reboot took over
+      if (showTarget !== null) continue;         // superseded: skip the stale paint
+      index = target;
+      applyFrame(frame);
+      stream.prefetch(seq, target, 3, nFrames, accum.back, accum.fwd, 2);
+    }
+  } finally {
+    showBusy = false;
+  }
   saveStateSoon();
 }
 
@@ -101,7 +121,8 @@ function paintLoop() {
     const a = (loopA / (nFrames - 1)) * 100, b = (loopB / (nFrames - 1)) * 100;
     f.style.background = `linear-gradient(90deg, transparent ${a}%,
       color-mix(in srgb, var(--accent) 30%, transparent) ${a}%,
-      color-mix(in srgb, var(--accent) 30%, transparent) ${b}%, transparent ${b}%)`;
+      color-mix(in srgb, var(--accent) 30%, transparent) ${b}%, transparent ${b}%),
+      var(--panel-2)`;
   } else {
     f.style.background = "";
   }
@@ -259,6 +280,7 @@ function setPlaying(on) {
   if (playing === on) return;
   playing = on;
   $("btn-play").textContent = on ? "⏸" : "▶";
+  document.body.classList.toggle("playing", on);   // reels spin, film runs (CSS)
   if (on) playLoop();
 }
 
@@ -277,7 +299,13 @@ async function playLoop() {
     index = next;
     reqId++;                                       // playback owns the position now
     applyFrame(frame);
-    stream.prefetch(seq, index, PREFETCH, nFrames, accum.back, accum.fwd);
+    // Pipeline depth follows the playback rate: at ×5 the per-frame budget is
+    // shorter than a roundtrip, so more requests must be in flight.
+    const depth = Math.min(12, Math.ceil(PREFETCH * speed));
+    stream.prefetch(seq, index, depth, nFrames, accum.back, accum.fwd);
+    if (loopA !== null && loopB !== null && index > loopB - depth) {
+      stream.prefetch(seq, loopA - 1, 2, nFrames, accum.back, accum.fwd);  // warm the wrap
+    }
     const budget = 1000 / (BASE_FPS * speed);
     const dt = performance.now() - t0;
     await sleep(Math.max(0, budget - dt));
@@ -326,6 +354,7 @@ async function initSession(s) {
   $("frames-panel").hidden = true;
   renderPlugins();
 
+  $("intermission").hidden = session.sequences.length > 0;
   if (session.sequences.length) {
     const pos = st && st.position && session.sequences.some((q) => q.id === st.position.seq)
       ? st.position : null;
@@ -415,15 +444,70 @@ async function loadScript(path) {
     pluginScripts.add(path);
     closeModal();
     renderPlugins();
+    toggleTransformsMenu(true);         // show what the script brought in
     saveStateSoon();
   } catch (e) {
     $("fs-error").textContent = String(e.message || e);
   }
 }
 
+// Forget a script: its transforms disappear, active ones are deactivated server-side.
+async function unloadScript(path) {
+  try {
+    const d = await api.pluginsUnload(path);
+    pluginScripts.delete(path);
+    pluginSpecs = d.plugins.specs;
+    const wasActive = pluginActive.length !== d.plugins.active.length;
+    pluginActive = d.plugins.active;
+    if (wasActive) {                    // virtual channels changed → full reboot
+      stream.clear();
+      await initSession(d.session);
+    } else {
+      renderPlugins();
+    }
+    saveStateSoon();
+  } catch (e) {
+    $("status").textContent = String(e.message || e);
+  }
+}
+
+function renderScripts() {
+  const box = $("scripts-list");
+  box.replaceChildren();
+  for (const path of [...pluginScripts].sort()) {
+    const row = document.createElement("div");
+    row.className = "script-row";
+    const name = document.createElement("span");
+    name.className = "script-name";
+    name.textContent = path.split("/").pop();
+    name.title = path;
+    const del = document.createElement("button");
+    del.className = "icon-btn";
+    del.textContent = "✕";
+    del.title = "Unload this script (its transforms are removed)";
+    del.onclick = () => unloadScript(path);
+    row.append(name, del);
+    box.appendChild(row);
+  }
+}
+
+function toggleTransformsMenu(open = null) {
+  const menu = $("transforms-menu");
+  menu.hidden = open === null ? !menu.hidden : !open;
+}
+
 function renderPlugins() {
+  renderScripts();
+  const btn = $("btn-transforms");
+  btn.textContent = pluginActive.length ? `Transforms · ${pluginActive.length}` : "Transforms";
   const box = $("plugins-list");
   box.replaceChildren();
+  if (!pluginSpecs.length) {
+    const empty = document.createElement("div");
+    empty.className = "plugins-empty";
+    empty.textContent = "No transforms — load a script below.";
+    box.appendChild(empty);
+  }
   const activeById = new Map(pluginActive.map((a) => [a.id, a]));
   for (const spec of pluginSpecs) {
     const row = document.createElement("div");
@@ -503,7 +587,7 @@ async function fsComplete(delta = 1) {
   const input = $("fs-input");
   if (fsCycle) {
     fsCycle.idx = (fsCycle.idx + delta + fsCycle.names.length) % fsCycle.names.length;
-    input.value = fsCycle.base + fsCycle.names[fsCycle.idx] + "/";
+    input.value = fsCycle.base + fsCycle.names[fsCycle.idx];
     fsHighlight();
     return;
   }
@@ -513,17 +597,21 @@ async function fsComplete(delta = 1) {
   const partial = v.slice(slash + 1);
   let d;
   try {
-    d = await api.fs(dir);
-  } catch {
+    d = await api.fs(dir, fsMode === "script" ? ".py" : null);
+  } catch (e) {
+    $("fs-error").textContent = String(e.message || e);
     return;
   }
+  $("fs-error").textContent = "";
   renderListing(d);
-  const names = d.dirs.map((e) => e.name).filter((n) => n.startsWith(partial));
+  const dirNames = d.dirs.map((e) => e.name + "/");
+  const fileNames = (d.files || []).map((f) => f);
+  const names = dirNames.concat(fileNames).filter((n) => n.startsWith(partial));
   if (!names.length) return;
   const base = d.path === "/" ? "/" : d.path + "/";
   if (names.length === 1) {
-    input.value = base + names[0] + "/";
-    browse(input.value);
+    input.value = base + names[0];
+    if (names[0].endsWith("/")) browse(input.value);
     return;
   }
   let lcp = names[0];
@@ -533,7 +621,7 @@ async function fsComplete(delta = 1) {
     return;
   }
   fsCycle = { base, names, idx: delta > 0 ? 0 : names.length - 1 };
-  input.value = base + fsCycle.names[fsCycle.idx] + "/";
+  input.value = base + fsCycle.names[fsCycle.idx];
   fsHighlight();
 }
 
@@ -541,7 +629,7 @@ function fsHighlight() {
   const rows = [...$("fs-list").querySelectorAll(".fs-entry")];
   rows.forEach((r) => r.classList.remove("selected"));
   if (!fsCycle) return;
-  const want = fsCycle.names[fsCycle.idx] + "/";
+  const want = fsCycle.names[fsCycle.idx];
   const row = rows.find((r) => r.textContent === want);
   if (row) {
     row.classList.add("selected");
@@ -638,7 +726,11 @@ async function boot() {
   $("btn-prev").onclick = () => { setPlaying(false); show(index - 1); };
   $("btn-next").onclick = () => { setPlaying(false); show(index + 1); };
   $("btn-play").onclick = () => setPlaying(!playing);
-  $("speed").onchange = () => { speed = +$("speed").value; saveStateSoon(); };
+  $("speed").onchange = () => {
+    speed = Math.max(0.1, +$("speed").value || 1);
+    $("speed").value = String(speed);
+    saveStateSoon();
+  };
   const onAccum = () => {
     accum = { back: Math.max(0, +$("accum-back").value || 0),
               fwd: Math.max(0, +$("accum-fwd").value || 0) };
@@ -652,19 +744,41 @@ async function boot() {
   $("sync-apply").onclick = applySync;
 
   $("btn-open").onclick = () => openModal("dataset");
-  $("btn-load-script").onclick = () => openModal("script");
+  $("btn-transforms").onclick = () => toggleTransformsMenu();
+  $("btn-load-script").onclick = () => { toggleTransformsMenu(false); openModal("script"); };
   $("btn-apply-plugins").onclick = applyPlugins;
+  window.addEventListener("mousedown", (e) => {
+    if (!$("transforms-menu").hidden && !e.target.closest(".menu-wrap")) toggleTransformsMenu(false);
+  });
+
+  // Collapsible rail panels; the collapsed set is a UI preference, kept locally.
+  const collapsedKey = "projector.railCollapsed";
+  let collapsed = [];
+  try { collapsed = JSON.parse(localStorage.getItem(collapsedKey)) || []; } catch { /* fresh */ }
+  for (const sec of document.querySelectorAll(".rail .panel")) {
+    if (collapsed.includes(sec.id)) sec.classList.add("collapsed");
+    sec.querySelector("h2").onclick = () => {
+      sec.classList.toggle("collapsed");
+      const now = [...document.querySelectorAll(".rail .panel.collapsed")].map((s) => s.id);
+      localStorage.setItem(collapsedKey, JSON.stringify(now));
+    };
+  }
   $("fs-close").onclick = closeModal;
   $("fs-open").onclick = openSelected;
   $("fs-input").addEventListener("input", () => { fsCycle = null; });
   $("fs-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") browse($("fs-input").value);
+    if (e.key === "Enter") {
+      const v = $("fs-input").value;
+      if (fsMode === "script" && v.endsWith(".py")) loadScript(v);
+      else browse(v);
+    }
     else if (e.key === "Tab") { e.preventDefault(); fsComplete(e.shiftKey ? -1 : 1); }
     else if (e.key === "ArrowDown") { e.preventDefault(); fsComplete(1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); fsComplete(-1); }
   });
 
   window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") toggleTransformsMenu(false);
     if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
     if (!$("fs-modal").hidden) return;
     if (e.key === "ArrowLeft") { setPlaying(false); show(index - 1); }

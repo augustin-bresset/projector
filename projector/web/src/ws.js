@@ -11,7 +11,7 @@ const TYPED = {
   int64: BigInt64Array, uint64: BigUint64Array,
 };
 
-const CACHE_MAX = 24;   // frames kept client-side (scrub-back is instant)
+const CACHE_MAX = 40;   // frames kept client-side (scrub-back is instant)
 
 function decodePacked(buf) {
   const view = new DataView(buf);
@@ -35,6 +35,7 @@ function decodePacked(buf) {
     back: header.back || 0,
     fwd: header.fwd || 0,
     timestamps: header.timestamps,
+    indices: header.indices || null,   // per-channel event counters (async)
     channels,
   };
 }
@@ -47,6 +48,7 @@ export class FrameStream {
     this.waiting = new Map();    // "seq:index" → [resolve, ...]
     this.inflight = new Set();   // keys requested but not yet answered
     this._connecting = null;
+    this.stats = { sent: 0, recv: 0 };   // debug / tests
   }
 
   _connect() {
@@ -65,6 +67,7 @@ export class FrameStream {
   }
 
   _onFrame(frame) {
+    this.stats.recv++;
     const key = `${frame.seq}:${frame.index}:${frame.back}:${frame.fwd}`;
     this.inflight.delete(key);
     this.cache.delete(key);              // re-insert = most recently used
@@ -81,6 +84,7 @@ export class FrameStream {
     if (this.cache.has(key) || this.inflight.has(key)) return;
     await this._connect();
     this.inflight.add(key);
+    this.stats.sent++;
     this.ws.send(JSON.stringify({ seq, index, back, fwd }));
   }
 
@@ -97,9 +101,13 @@ export class FrameStream {
     return p;
   }
 
-  // Fire-and-forget: pipeline the next `count` frames after `index`.
-  prefetch(seq, index, count, nFrames, back = 0, fwd = 0) {
+  // Fire-and-forget: pipeline the next `count` frames after `index`, plus
+  // `behind` frames before it (scrubbing goes both ways).
+  prefetch(seq, index, count, nFrames, back = 0, fwd = 0, behind = 0) {
     for (let i = index + 1; i <= Math.min(index + count, nFrames - 1); i++) {
+      this._send(seq, i, back, fwd).catch(() => {});
+    }
+    for (let i = index - 1; i >= Math.max(index - behind, 0); i--) {
       this._send(seq, i, back, fwd).catch(() => {});
     }
   }

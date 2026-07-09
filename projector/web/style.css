@@ -1,15 +1,17 @@
-/* Projector — web front. Dark room, amber beam: sharp, flat, high-contrast. */
+/* Projector — web front. A lit projection booth: amber beam on warm bronze,
+   art-deco double frames, gold gradients on the active controls. */
 :root {
-  --bg: #100e0b;
-  --panel: #181510;
-  --panel-2: #211d16;
-  --line: rgba(255, 200, 100, 0.08);
-  --line-strong: rgba(255, 200, 100, 0.18);
-  --text: #ece7dd;
-  --muted: #8c8578;
+  --bg: #15110c;
+  --panel: #1f1a12;
+  --panel-2: #2a2318;
+  --line: rgba(255, 205, 120, 0.12);
+  --line-strong: rgba(255, 205, 120, 0.26);
+  --text: #f2ecdf;
+  --muted: #a89d89;
   --accent: #ffb000;          /* projector beam */
   --accent-hi: #ffd166;
   --accent-ink: #1c1200;
+  --gold: linear-gradient(180deg, var(--accent-hi), var(--accent));
   --canvas-bg: #0c0a08;
   --radius: 2px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -40,12 +42,14 @@ body {
 .topbar {
   display: flex; align-items: center; gap: 14px; padding: 0 14px;
   background: var(--panel); border: 1px solid var(--line-strong);
+  box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--line);  /* deco double frame */
 }
 .brand {
   display: flex; align-items: center; gap: 9px;
-  font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; font-size: 14px;
+  font-weight: 700; letter-spacing: 2.5px; text-transform: uppercase; font-size: 14px;
 }
-.brand .beam rect { fill: var(--text); }
+.brand .beam rect, .brand .beam .hub { fill: var(--text); }
+.brand .beam .reel { fill: none; stroke: var(--text); stroke-width: 1.7; }
 .brand .beam .light {
   fill: var(--accent); opacity: 0.85;
   filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 65%, transparent));
@@ -55,7 +59,20 @@ body {
   0%, 100% { opacity: 0.85; } 48% { opacity: 0.85; }
   50% { opacity: 0.55; } 52% { opacity: 0.85; } 71% { opacity: 0.7; } 73% { opacity: 0.85; }
 }
-@media (prefers-reduced-motion: reduce) { .brand .beam .light { animation: none; } }
+/* The reels ARE the playback indicator: they turn while frames roll (take-up
+   reel faster, like the machine) and freeze on pause. */
+body.playing .brand .beam .reel {
+  stroke-dasharray: 3.4 2.4;
+  transform-box: fill-box; transform-origin: center;
+  animation: reelspin 2.1s linear infinite;
+}
+body.playing .brand .beam .reel.small { animation-duration: 1.1s; stroke-dasharray: 2.6 2; }
+@keyframes reelspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .brand .beam .light, body.playing .brand .beam .reel,
+  body.playing .filmwrap::before, body.playing .filmwrap::after,
+  #intermission::before, #intermission .card { animation: none; }
+}
 .spacer { flex: 1; }
 .status {
   color: var(--muted); font-family: var(--mono); font-size: 11px;
@@ -74,7 +91,7 @@ body {
 }
 .tbtn:hover, .btn:hover, select:hover { border-color: var(--accent); }
 .tbtn.active {
-  background: var(--accent); color: var(--accent-ink);
+  background: var(--gold); color: var(--accent-ink);
   border-color: var(--accent); font-weight: 600;
 }
 input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer; }
@@ -83,11 +100,20 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 .body { display: flex; min-height: 0; }
 .rail { flex: 0 0 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 3px; }
 
-.panel { background: var(--panel); border: 1px solid var(--line-strong); padding: 12px; }
+.panel {
+  background: var(--panel); border: 1px solid var(--line-strong); padding: 12px;
+  box-shadow: inset 0 0 0 3px var(--panel), inset 0 0 0 4px var(--line);  /* deco double frame */
+}
 .panel h2 {
   margin: 0 0 10px; font-size: 10.5px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 1.2px; color: var(--muted);
+  cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px;
 }
+.panel h2::before { content: "▾"; font-size: 8px; transition: transform 0.12s; }
+.panel h2:hover { color: var(--text); }
+.panel.collapsed h2 { margin-bottom: 0; }
+.panel.collapsed h2::before { transform: rotate(-90deg); }
+.panel.collapsed > :not(h2) { display: none; }
 
 .sequences { display: flex; flex-direction: column; gap: 4px; }
 .seq-btn { text-align: left; font-family: var(--mono); }
@@ -102,6 +128,26 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 .plugin-error { color: #ff6b4a; padding-left: 20px; font-size: 10.5px; }
 #btn-apply-plugins { width: 100%; margin-top: 6px; }
 #btn-load-script { width: 100%; }
+
+/* --------------------------------------------------- top-bar dropdown menus */
+.menu-wrap { position: relative; }
+.menu-dropdown {
+  position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
+  width: 320px; max-height: 72vh; overflow-y: auto; padding: 12px;
+  background: var(--panel); border: 1px solid var(--line-strong);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+}
+.menu-dropdown[hidden] { display: none; }
+.menu-section + .menu-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-strong); }
+.menu-section h3 {
+  margin: 0 0 8px; font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 1.2px; color: var(--muted);
+}
+.scripts-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.scripts-list:empty { display: none; }
+.script-row { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; }
+.script-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plugins-empty { color: var(--muted); font-size: 11px; }
 
 .bookmarks { display: flex; flex-direction: column; gap: 3px; }
 .bookmark-row { display: flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 11px; }
@@ -123,7 +169,16 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
   font-family: var(--mono); font-size: 11px; padding: 2px;
 }
 .frame-ts { color: var(--accent); }
-.speed { flex: 0 0 auto; padding: 4px 7px; font-size: 11px; }
+.speed-wrap {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 3px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.speed {
+  width: 52px; padding: 4px 7px; font-size: 11px; font-family: var(--mono);
+  appearance: none; border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--panel-2); color: var(--text);
+}
+.speed:hover, .speed:focus { border-color: var(--accent); outline: none; }
 .channel-item { display: flex; align-items: center; gap: 8px; padding: 3px 2px; font-family: var(--mono); font-size: 12px; }
 .kind-badge {
   flex: none; width: 38px; text-align: center; padding: 2px 0;
@@ -132,7 +187,37 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 }
 
 /* ----------------------------------------------------------- workspace */
-.workspace { flex: 1 1 0; display: flex; min-width: 0; }
+.workspace { flex: 1 1 0; display: flex; min-width: 0; position: relative; }
+
+/* Empty state — the intermission card: film grain, a title, a rare flicker. */
+#intermission {
+  position: absolute; inset: 50px 0 0 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+#intermission[hidden] { display: none; }
+#intermission::before {
+  content: ""; position: absolute; inset: -50%;
+  background-image:
+    radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1.4px),
+    radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1.2px);
+  background-size: 3px 3px, 5px 5px;
+  animation: grain 0.45s steps(3) infinite;
+}
+@keyframes grain {
+  0% { transform: translate(0, 0); } 33% { transform: translate(-8px, 5px); }
+  66% { transform: translate(6px, -7px); } 100% { transform: translate(0, 0); }
+}
+#intermission .card { text-align: center; animation: interflick 5s ease-in-out infinite; }
+#intermission .card span {
+  display: block; font-family: var(--mono); font-size: 24px; letter-spacing: 8px;
+  text-transform: uppercase; color: var(--accent);
+  text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+#intermission .card small { color: var(--muted); font-size: 12px; letter-spacing: 2px; }
+@keyframes interflick {
+  0%, 100% { opacity: 1; } 92% { opacity: 1; } 94% { opacity: 0.55; } 96% { opacity: 1; }
+}
 .views { flex: 1 1 0; display: flex; flex-direction: column; min-width: 0; gap: 8px; }
 
 .addbar { display: flex; gap: 7px; }
@@ -140,7 +225,9 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 .addbar .btn { text-transform: uppercase; letter-spacing: 0.5px; font-size: 11px; white-space: nowrap; }
 
 .views-stack { flex: 1 1 0; display: flex; flex-direction: row; min-height: 0; min-width: 0; }
-.vcol { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.vsplit { display: flex; min-width: 0; min-height: 0; }
+.vsplit-row { flex-direction: row; }
+.vsplit-col { flex-direction: column; }
 
 .vpanel {
   position: relative;
@@ -167,6 +254,13 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
   color: var(--accent); font-size: 10.5px; min-width: 26px;
 }
 .vpanel-name { flex: 1; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vpanel-idx {
+  font-family: var(--mono); font-size: 10.5px; color: var(--accent);
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  padding: 2px 5px; min-width: 30px; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.vpanel-idx:empty { display: none; }
 .vpanel-warn { color: #ff6b4a; font-family: var(--mono); font-size: 10.5px; }
 .vpanel-head select { padding: 4px 7px; font-size: 11px; }
 .vpanel-head .color-sel { flex: 0 0 150px; }
@@ -175,8 +269,17 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
 .vpanel-body { flex: 1; min-height: 0; position: relative; background: var(--canvas-bg); }
 .vpanel-body canvas { display: block; }
 .canvas-body canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.img-body { display: flex; align-items: center; justify-content: center; }
+.img-body { display: flex; align-items: center; justify-content: center; overflow: hidden; }
 .img-body canvas { max-width: 100%; max-height: 100%; }
+.img-body[data-fit="fill"] canvas {
+  width: 100%; height: 100%; max-width: none; max-height: none; object-fit: cover;
+}
+.img-body[data-fit="actual"] { display: block; overflow: auto; }
+.img-body[data-fit="actual"] canvas { max-width: none; max-height: none; }
+.img-body[data-smooth="off"] canvas { image-rendering: pixelated; }
+.img-body.zoomed { overflow: hidden; }
+.img-body.zoomed canvas { cursor: grab; }
+.img-body.zoomed canvas:active { cursor: grabbing; }
 
 /* ----------------------------------------------------------- gutters (resize handles) */
 .gutter { flex: 0 0 8px; position: relative; }
@@ -195,8 +298,41 @@ input[type="range"] { accent-color: var(--accent); width: 100%; cursor: pointer;
   display: flex; align-items: center; gap: 12px; padding: 0 14px; min-height: 44px;
   background: var(--panel); border: 1px solid var(--line-strong);
 }
-.footer input[type="range"] { flex: 1; }
 #frame-label { font-family: var(--mono); white-space: nowrap; }
+
+/* The timeline is the film itself: sprocket perforations overlaid on both
+   edges by the wrapper (so they can scroll during playback without touching
+   the A-B loop highlight painted on the input), the thumb is the light gate. */
+.filmwrap { position: relative; flex: 1; height: 16px; }
+.filmwrap::before, .filmwrap::after {
+  content: ""; position: absolute; left: 2px; right: 2px; height: 4px;
+  background: repeating-linear-gradient(90deg, transparent 0 5px, var(--bg) 5px 11px, transparent 11px 16px);
+  pointer-events: none; z-index: 1;
+}
+.filmwrap::before { top: 2px; }
+.filmwrap::after { bottom: 2px; }
+body.playing .filmwrap::before, body.playing .filmwrap::after {
+  animation: filmscroll 0.9s linear infinite;   /* the film runs through the gate */
+}
+@keyframes filmscroll { to { background-position-x: -16px; } }
+#frame {
+  appearance: none; -webkit-appearance: none; display: block;
+  width: 100%; height: 100%;
+  border: 1px solid var(--line-strong); border-radius: 2px;
+  background: var(--panel-2);
+  outline: none;
+}
+#frame::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 7px; height: 14px; border-radius: 1px; border: none;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+#frame::-moz-range-thumb {
+  width: 7px; height: 14px; border-radius: 1px; border: none;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
 
 /* ----------------------------------------------------------- beam signature */
 body::before {
@@ -278,7 +414,7 @@ body::before {
 .row { display: flex; align-items: center; gap: 12px; }
 .row select { flex: 1; }
 .tbtn.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; margin-left: auto; }
-.tbtn.primary:hover { background: var(--accent); color: var(--accent-ink); }
+.tbtn.primary:hover { background: var(--gold); color: var(--accent-ink); }
 input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
 
 /* subtle scrollbars */

@@ -13,7 +13,9 @@ export class PanelManager {
     this.session = session;
     this.menuEl = menuEl;     // rail "Views" menu: one row per panel (hide / pause)
     this.panels = [];
-    this.columns = [];        // mosaic layout: [{el, panels: [id, ...]}, ...]
+    // Layout: a split tree — {t:"leaf", id} | {t:"split", dir:"row"|"col", kids}.
+    // Docking left/right of a view splits THAT cell, not the whole workspace.
+    this.tree = null;
     this.frame = null;
     this._seq = 0;
     this._hintEl = null;      // drop-zone highlight while dragging a panel
@@ -37,9 +39,10 @@ export class PanelManager {
 
   // --------------------------------------------- session persistence (layout)
   serialize() {
-    return this.columns.map((c) =>
-      c.panels.map((id) => {
-        const p = this._byId(id);
+    const enc = (node) => {
+      if (!node) return null;
+      if (node.t === "leaf") {
+        const p = this._byId(node.id);
         const out = { kind: p.kind, channel: p.channel, hidden: p.hiddenP, paused: p.paused };
         if (p.kind === "3d") {
           out.colorBy = p.view.colorBy;
@@ -47,41 +50,75 @@ export class PanelManager {
           out.frameMode = p.view.frameMode;
           out.size = p.view.points.material.size;
           out.controls = p.view.controlStyle;
+        } else if (p.kind === "bev") {
+          out.dot = p.view.dot;
+        } else {
+          out.imgFit = p.imgCfg.fit;
+          out.imgSmooth = p.imgCfg.smooth;
+          out.imgOrder = p.imgCfg.order;
         }
         return out;
-      }),
-    );
+      }
+      return { dir: node.dir, kids: node.kids.map(enc).filter(Boolean) };
+    };
+    return enc(this.tree);
+  }
+
+  _applySpec(p, spec) {
+    if (p.kind === "3d") {
+      if (spec.colorBy && [...p.colorSel.options].some((o) => o.value === spec.colorBy)) {
+        p.colorSel.value = spec.colorBy;
+        p.view.setColorBy(spec.colorBy);
+        this._buildOpts(p, spec.colorBy);
+      }
+      if (spec.cameraMode && !p.camSel.disabled) {
+        p.camSel.value = spec.cameraMode;
+        p.view.setCameraMode(spec.cameraMode);
+      }
+      if (spec.frameMode) p.view.setFrameMode(spec.frameMode);
+      if (spec.size) p.view.setPointSize(spec.size);
+      if (spec.controls) p.view.setControlStyle(spec.controls);
+    }
+    if (p.kind === "bev" && spec.dot) {
+      p.view.setDot(spec.dot);
+      this._buildOpts(p);              // controls reflect the restored value
+    }
+    if (p.kind === "img" && (spec.imgFit || spec.imgSmooth === false || spec.imgOrder)) {
+      if (spec.imgFit) p.imgCfg.fit = spec.imgFit;
+      if (spec.imgSmooth === false) p.imgCfg.smooth = false;
+      if (spec.imgOrder) p.imgCfg.order = spec.imgOrder;
+      this._buildOpts(p);              // rebuild controls + apply the cfg
+    }
+    if (spec.hidden) p.hiddenP = true;
+    if (spec.paused) p.paused = true;
   }
 
   // Rebuild panels from a serialized layout; false when nothing applied
-  // (e.g. the channels changed since the state was saved).
-  restore(cols) {
+  // (e.g. the channels changed since the state was saved). Accepts the split
+  // tree ({dir, kids}) and the legacy array-of-columns format.
+  restore(saved) {
     const valid = new Set([...this.cloudKeys, ...this.imageKeys]);
+    const specTree = Array.isArray(saved)
+      ? { dir: "row", kids: (saved || []).map((col) => ({ dir: "col", kids: col || [] })) }
+      : saved;
     let added = 0;
-    (cols || []).forEach((col, ci) => {
-      for (const spec of col || []) {
-        if (!valid.has(spec.channel)) continue;
-        const p = this.add(spec.kind, spec.channel, ci);
-        added++;
-        if (p.kind === "3d") {
-          if (spec.colorBy && [...p.colorSel.options].some((o) => o.value === spec.colorBy)) {
-            p.colorSel.value = spec.colorBy;
-            p.view.setColorBy(spec.colorBy);
-            this._buildOpts(p, spec.colorBy);
-          }
-          if (spec.cameraMode && !p.camSel.disabled) {
-            p.camSel.value = spec.cameraMode;
-            p.view.setCameraMode(spec.cameraMode);
-          }
-          if (spec.frameMode) p.view.setFrameMode(spec.frameMode);
-          if (spec.size) p.view.setPointSize(spec.size);
-          if (spec.controls) p.view.setControlStyle(spec.controls);
-        }
-        if (spec.hidden) p.hiddenP = true;
-        if (spec.paused) p.paused = true;
+    const build = (node) => {
+      if (!node) return null;
+      if (node.dir) {
+        const kids = (node.kids || []).map(build).filter(Boolean);
+        if (!kids.length) return null;
+        if (kids.length === 1) return kids[0];
+        return { t: "split", dir: node.dir === "col" ? "col" : "row", kids };
       }
-    });
-    if (added) {
+      if (!valid.has(node.channel)) return null;
+      const p = this._createPanel(node.kind, node.channel);
+      added++;
+      this._applySpec(p, node);
+      return { t: "leaf", id: p.id };
+    };
+    const tree = build(specTree);
+    if (tree && added) {
+      this.tree = tree;
       this._relayout();
       this._renderMenu();
     }
@@ -106,6 +143,16 @@ export class PanelManager {
   }
 
   add(kind, channel, col = null) {
+    const panel = this._createPanel(kind, channel);
+    this._place(panel.id, col);
+    this._relayout();
+    this._renderMenu();
+    if (this.frame) this._render(panel);
+    return panel;
+  }
+
+  // Build the panel (DOM, view, settings) without touching the layout tree.
+  _createPanel(kind, channel) {
     const id = ++this._seq;
     const el = document.createElement("section");
     el.className = "vpanel";
@@ -119,6 +166,9 @@ export class PanelManager {
     const name = document.createElement("span");
     name.className = "vpanel-name";
     name.textContent = pretty(channel);
+    const idx = document.createElement("span");
+    idx.className = "vpanel-idx";
+    idx.title = "Frame index shown by this view (its channel's own counter on async rigs)";
     const warn = document.createElement("span");
     warn.className = "vpanel-warn";
     const close = document.createElement("button");
@@ -129,7 +179,18 @@ export class PanelManager {
     const body = document.createElement("div");
     body.className = "vpanel-body " + (kind === "img" ? "img-body" : "canvas-body");
 
-    const panel = { id, kind, channel, el, body, warn, view: null, canvas: null };
+    const panel = { id, kind, channel, el, body, warn, idxEl: idx, view: null, canvas: null };
+
+    // Every view gets a settings strip behind the gear; its content is per-kind.
+    const gear = document.createElement("button");
+    gear.className = "tbtn gear";
+    gear.textContent = "⚙";
+    gear.title = "View settings";
+    const optsEl = document.createElement("div");
+    optsEl.className = "vopts";
+    optsEl.hidden = true;
+    panel.optsEl = optsEl;
+    gear.onclick = () => { optsEl.hidden = !optsEl.hidden; };
 
     if (kind === "3d") {
       const labelings = this.labelingsOf(channel);
@@ -158,16 +219,7 @@ export class PanelManager {
       camSel.disabled = !this.poseKey;
       camSel.onchange = () => panel.view.setCameraMode(camSel.value);
 
-      const gear = document.createElement("button");
-      gear.className = "tbtn gear";
-      gear.textContent = "⚙";
-      gear.title = "Display options";
-      head.append(tag, name, warn, colorSel, camSel, gear, close);
-
-      const optsEl = document.createElement("div");
-      optsEl.className = "vopts";
-      optsEl.hidden = true;
-      panel.optsEl = optsEl;
+      head.append(tag, name, idx, warn, colorSel, camSel, gear, close);
       panel.labelings = labelings;
 
       panel.view = new CloudView(body);
@@ -189,33 +241,29 @@ export class PanelManager {
         panel.view.setCameraMode(camSel.value);
         if (this.onChanged) this.onChanged();
       };
-      gear.onclick = () => { optsEl.hidden = !optsEl.hidden; };
       this._buildOpts(panel, "height");
-
-      el.append(head, optsEl, body);
     } else if (kind === "bev") {
-      head.append(tag, name, warn, close);
+      head.append(tag, name, idx, warn, gear, close);
       panel.view = new BevView(body);
       panel.view.setPoseChannel(this.poseKey);
       panel.view.setChannel(channel);
       if (this.trajectory) panel.view.setTrajectory(this.trajectory);
-      el.append(head, body);
+      this._buildOpts(panel);
     } else {
-      head.append(tag, name, warn, close);
+      head.append(tag, name, idx, warn, gear, close);
       panel.canvas = document.createElement("canvas");
       body.appendChild(panel.canvas);
-      el.append(head, body);
+      panel.imgCfg = { fit: "contain", smooth: true, order: "rgb" };
+      this._buildOpts(panel);
+      this._bindImgZoom(panel);
     }
+    el.append(head, optsEl, body);
 
     close.onclick = () => this.remove(id);
     this._bindDrag(panel, head);
     panel.hiddenP = false;
     panel.paused = false;
     this.panels.push(panel);
-    this._place(id, col);
-    this._relayout();
-    this._renderMenu();
-    if (this.frame) this._render(panel);
     return panel;
   }
 
@@ -260,26 +308,33 @@ export class PanelManager {
     if (this.onChanged) this.onChanged();
   }
 
-  // ------------------------------------------------- mosaic layout (columns of rows)
-  _newCol() {
-    const el = document.createElement("div");
-    el.className = "vcol";
-    el.style.flex = "1 1 0";
-    return el;
-  }
-
+  // ------------------------------------------------- split-tree layout
+  // `col` keeps the historic column semantics: root is a row of columns, and
+  // col=null stacks into the last one (what "+ Add view" always did).
   _place(id, col) {
-    if (col === null) col = Math.max(0, this.columns.length - 1);
-    while (this.columns.length <= col) this.columns.push({ el: this._newCol(), panels: [] });
-    this.columns[col].panels.push(id);
+    const leaf = { t: "leaf", id };
+    if (!this.tree) { this.tree = leaf; return; }
+    if (this.tree.t !== "split" || this.tree.dir !== "row") {
+      this.tree = { t: "split", dir: "row", kids: [this.tree] };
+    }
+    const kids = this.tree.kids;
+    if (col === null) col = kids.length - 1;
+    if (col >= kids.length) { kids.push(leaf); return; }
+    const target = kids[col];
+    if (target.t === "split" && target.dir === "col") target.kids.push(leaf);
+    else kids[col] = { t: "split", dir: "col", kids: [target, leaf] };
   }
 
   _dropFromLayout(id) {
-    for (const c of this.columns) {
-      const i = c.panels.indexOf(id);
-      if (i >= 0) { c.panels.splice(i, 1); break; }
-    }
-    this.columns = this.columns.filter((c) => c.panels.length);
+    const prune = (node) => {
+      if (!node) return null;
+      if (node.t === "leaf") return node.id === id ? null : node;
+      node.kids = node.kids.map(prune).filter(Boolean);
+      if (!node.kids.length) return null;
+      if (node.kids.length === 1) return node.kids[0];
+      return node;
+    };
+    this.tree = prune(this.tree);
   }
 
   _byId(id) {
@@ -343,27 +398,173 @@ export class PanelManager {
     if (this._hintEl) this._hintEl.remove();
   }
 
+  // Dock `dragId` against `targetId`: left/right splits the target's CELL into
+  // a row, top/bottom into a column. When the target's parent already splits in
+  // that direction, the dragged view slides in beside it instead of nesting.
   _dock(dragId, targetId, zone) {
+    if (dragId === targetId) return;
     this._dropFromLayout(dragId);
-    let ci = -1, pi = -1;
-    this.columns.forEach((c, i) => {
-      const j = c.panels.indexOf(targetId);
-      if (j >= 0) { ci = i; pi = j; }
-    });
-    if (ci < 0) {
-      this.columns.push({ el: this._newCol(), panels: [dragId] });
-    } else if (zone === "top" || zone === "bottom") {
-      this.columns[ci].panels.splice(zone === "top" ? pi : pi + 1, 0, dragId);
-    } else {
-      const col = { el: this._newCol(), panels: [dragId] };
-      this.columns.splice(zone === "left" ? ci : ci + 1, 0, col);
+    const dir = zone === "left" || zone === "right" ? "row" : "col";
+    const first = zone === "left" || zone === "top";
+    const drag = { t: "leaf", id: dragId };
+    const place = (node, parent) => {
+      if (node.t === "leaf") {
+        if (node.id !== targetId) return false;
+        if (parent && parent.dir === dir) {
+          const i = parent.kids.indexOf(node);
+          parent.kids.splice(first ? i : i + 1, 0, drag);
+        } else {
+          const split = { t: "split", dir, kids: first ? [drag, node] : [node, drag] };
+          if (parent) parent.kids[parent.kids.indexOf(node)] = split;
+          else this.tree = split;
+        }
+        return true;
+      }
+      return node.kids.some((k) => place(k, node));
+    };
+    if (!this.tree) this.tree = drag;
+    else if (!place(this.tree, null)) {
+      this.tree = { t: "split", dir: "row", kids: [this.tree, drag] };  // lost target: new column
     }
     this._relayout();
     if (this.onChanged) this.onChanged();
   }
 
-  // ------------------------------------------------- options strip (3D panels)
+  // ------------------------------------------------- per-view settings strip
   _buildOpts(panel, mode) {
+    if (panel.kind === "3d") this._buildOpts3d(panel, mode);
+    else if (panel.kind === "bev") this._buildOptsBev(panel);
+    else this._buildOptsImg(panel);
+  }
+
+  _buildOptsBev(panel) {
+    const box = panel.optsEl;
+    box.replaceChildren();
+    const view = panel.view;
+
+    const sizeLab = document.createElement("label");
+    sizeLab.className = "opt";
+    sizeLab.textContent = "size";
+    const size = document.createElement("input");
+    size.type = "range"; size.min = "1"; size.max = "5"; size.step = "0.2";
+    size.value = String(view.dot);
+    size.oninput = () => view.setDot(+size.value);
+    size.onchange = () => { if (this.onChanged) this.onChanged(); };
+    sizeLab.appendChild(size);
+
+    const refit = document.createElement("button");
+    refit.className = "tbtn";
+    refit.textContent = "Re-fit";
+    refit.title = "Re-frame the view on the current cloud";
+    refit.onclick = () => view.refit();
+    box.append(sizeLab, refit);
+  }
+
+  _buildOptsImg(panel) {
+    const box = panel.optsEl;
+    box.replaceChildren();
+
+    const fitLab = document.createElement("label");
+    fitLab.className = "opt";
+    fitLab.textContent = "fit";
+    const fit = document.createElement("select");
+    fillSelect(fit, [["contain", "Fit"], ["fill", "Fill"], ["actual", "1:1 pixels"]]);
+    fit.value = panel.imgCfg.fit;
+    fit.onchange = () => {
+      panel.imgCfg.fit = fit.value;
+      this._applyImgCfg(panel);
+      if (this.onChanged) this.onChanged();
+    };
+    fitLab.appendChild(fit);
+
+    const smoothLab = document.createElement("label");
+    smoothLab.className = "opt";
+    const smooth = document.createElement("input");
+    smooth.type = "checkbox";
+    smooth.checked = panel.imgCfg.smooth;
+    smooth.onchange = () => {
+      panel.imgCfg.smooth = smooth.checked;
+      this._applyImgCfg(panel);
+      if (this.onChanged) this.onChanged();
+    };
+    smoothLab.append(smooth, document.createTextNode(" smooth"));
+
+    // Channel order: rosbag extractions are OpenCV bgr8 with no metadata left,
+    // so a red sky means "flip me" — the choice is per view and persisted.
+    const orderLab = document.createElement("label");
+    orderLab.className = "opt";
+    orderLab.textContent = "channels";
+    const order = document.createElement("select");
+    fillSelect(order, [["rgb", "RGB"], ["bgr", "BGR (OpenCV)"]]);
+    order.value = panel.imgCfg.order;
+    order.title = "Red sky? The source stores BGR (OpenCV/rosbag) — flip it here.";
+    order.onchange = () => {
+      panel.imgCfg.order = order.value;
+      panel._lastImg = null;                 // force a redraw with the new order
+      if (this.frame) this._render(panel);
+      if (this.onChanged) this.onChanged();
+    };
+    orderLab.appendChild(order);
+
+    box.append(fitLab, smoothLab, orderLab);
+    this._applyImgCfg(panel);
+  }
+
+  _applyImgCfg(panel) {
+    panel.body.dataset.fit = panel.imgCfg.fit;
+    panel.body.dataset.smooth = panel.imgCfg.smooth ? "on" : "off";
+  }
+
+  // Wheel = zoom on the cursor, drag = pan (once zoomed), double-click = reset.
+  // A CSS transform over the canvas, so it costs nothing per frame.
+  _bindImgZoom(panel) {
+    const z = { k: 1, x: 0, y: 0 };
+    panel.zoom = z;
+    const apply = () => {
+      panel.canvas.style.transform = z.k === 1 ? "" : `translate(${z.x}px, ${z.y}px) scale(${z.k})`;
+      panel.canvas.style.transformOrigin = "center";
+      panel.body.classList.toggle("zoomed", z.k !== 1);
+    };
+    // Cursor offset from the canvas's UNtransformed center (layout box).
+    const center = () => {
+      const br = panel.body.getBoundingClientRect();
+      return [
+        br.left + panel.canvas.offsetLeft + panel.canvas.offsetWidth / 2,
+        br.top + panel.canvas.offsetTop + panel.canvas.offsetHeight / 2,
+      ];
+    };
+    panel.body.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const [cx, cy] = center();
+      const mx = e.clientX - cx, my = e.clientY - cy;
+      const k2 = Math.min(24, Math.max(1, z.k * Math.exp(-e.deltaY * 0.0018)));
+      const f = k2 / z.k;
+      z.x = mx - f * (mx - z.x);   // keep the texel under the cursor fixed
+      z.y = my - f * (my - z.y);
+      z.k = k2;
+      if (z.k === 1) { z.x = 0; z.y = 0; }
+      apply();
+    }, { passive: false });
+    panel.body.addEventListener("mousedown", (e) => {
+      if (z.k === 1 || e.button !== 0) return;
+      e.preventDefault();
+      let [px, py] = [e.clientX, e.clientY];
+      const move = (ev) => {
+        z.x += ev.clientX - px; z.y += ev.clientY - py;
+        px = ev.clientX; py = ev.clientY;
+        apply();
+      };
+      const up = () => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+    panel.body.addEventListener("dblclick", () => { z.k = 1; z.x = 0; z.y = 0; apply(); });
+  }
+
+  _buildOpts3d(panel, mode) {
     const box = panel.optsEl;
     box.replaceChildren();
     const view = panel.view;
@@ -594,7 +795,7 @@ export class PanelManager {
   dispose() {
     for (const p of this.panels) if (p.view) p.view.dispose();
     this.panels = [];
-    this.columns = [];
+    this.tree = null;
     this.stack.replaceChildren();
     if (this.menuEl) this.menuEl.replaceChildren();
   }
@@ -607,6 +808,13 @@ export class PanelManager {
   // labels on a fresh scan would color it wrong (silently so on fixed-size
   // sensors, where the length check cannot catch it).
   update(frame) {
+    // Per-channel display index, recorded BEFORE the merge: a channel that did
+    // not tick in this frame keeps its previous counter (apairo_rr semantics).
+    if (!this.frame || this.frame.seq !== frame.seq) this.chanIndex = {};
+    this.chanIndex = this.chanIndex || {};
+    for (const k of Object.keys(frame.channels)) {
+      this.chanIndex[k] = frame.indices && k in frame.indices ? frame.indices[k] : frame.index;
+    }
     if (!this.frame || this.frame.seq !== frame.seq) {
       this.frame = { ...frame, channels: { ...frame.channels } };
     } else {
@@ -623,13 +831,27 @@ export class PanelManager {
 
   _render(panel) {
     if (panel.hiddenP || panel.paused) return;   // frozen views keep their last frame
+    this._paintIdx(panel);
     if (panel.kind === "img") {
       const img = this.frame.channels[panel.channel];
-      if (img && img !== panel._lastImg) { drawImage(panel.canvas, img); panel._lastImg = img; }
+      if (img && img !== panel._lastImg) {
+        drawImage(panel.canvas, img, panel.imgCfg.order === "bgr");
+        panel._lastImg = img;
+      }
       return;
     }
     panel.view.setFrame(this.frame);
     this._afterRender(panel);
+  }
+
+  // Frame counter of the view's channel — its own event index on async rigs,
+  // the global frame index otherwise. Paused views freeze it with their frame.
+  _paintIdx(panel) {
+    const i = this.chanIndex && panel.channel in this.chanIndex
+      ? this.chanIndex[panel.channel] : this.frame.index;
+    panel.idxEl.textContent = `#${i}`;
+    const ts = this.frame.timestamps && this.frame.timestamps[panel.channel];
+    if (ts !== undefined && ts !== null) panel.idxEl.title = `frame #${i} · t=${ts.toFixed(3)}s`;
   }
 
   _afterRender(panel) {
@@ -644,34 +866,39 @@ export class PanelManager {
     }
   }
 
-  // Rebuild the mosaic (columns, panels, resize handles) by re-inserting the
-  // existing nodes — panel and column elements persist, so flex sizes survive.
-  // Hidden panels (and columns left empty by them) are simply left out.
+  // Rebuild the mosaic from the split tree, re-inserting the persistent panel
+  // and split elements so flex sizes survive a relayout. Hidden panels (and
+  // splits they empty) are left out; a split with one visible kid dissolves.
   _relayout() {
-    this.stack.replaceChildren();
-    let prevCol = null;
-    for (const c of this.columns) {
-      const visible = c.panels.map((id) => this._byId(id)).filter((p) => !p.hiddenP);
-      if (!visible.length) continue;
-      if (prevCol) {
-        const g = document.createElement("div");
-        g.className = "gutter gutter-v";
-        this.stack.appendChild(g);
-        growGutter(g, prevCol.el, c.el, "x", 160);
+    const render = (node) => {
+      if (node.t === "leaf") {
+        const p = this._byId(node.id);
+        return !p || p.hiddenP ? null : p.el;
       }
-      c.el.replaceChildren();
-      visible.forEach((p, pi) => {
-        if (pi > 0) {
+      const parts = node.kids.map(render).filter(Boolean);
+      if (!parts.length) return null;
+      if (parts.length === 1) return parts[0];
+      if (!node.el) {
+        node.el = document.createElement("div");
+        node.el.style.flex = "1 1 0";
+      }
+      node.el.className = `vsplit vsplit-${node.dir}`;
+      node.el.replaceChildren();
+      parts.forEach((el, i) => {
+        if (i > 0) {
           const g = document.createElement("div");
-          g.className = "gutter gutter-h";
-          c.el.appendChild(g);
-          growGutter(g, visible[pi - 1].el, p.el, "y", 90);
+          g.className = node.dir === "row" ? "gutter gutter-v" : "gutter gutter-h";
+          node.el.appendChild(g);
+          growGutter(g, parts[i - 1], el, node.dir === "row" ? "x" : "y", node.dir === "row" ? 160 : 90);
         }
-        c.el.appendChild(p.el);
+        node.el.appendChild(el);
       });
-      this.stack.appendChild(c.el);
-      prevCol = c;
-    }
+      return node.el;
+    };
+    this.stack.replaceChildren();
+    if (!this.tree) return;
+    const rootEl = render(this.tree);
+    if (rootEl) this.stack.appendChild(rootEl);
   }
 }
 

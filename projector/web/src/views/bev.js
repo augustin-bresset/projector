@@ -21,6 +21,7 @@ export class BevView {
     this._fitted = false;
     this._frameGuess = null;        // world/ego cloud frame (see _guessFrame)
     this.scale = 10; this.cx = 0; this.cy = 0;
+    this.dot = 1.8;                 // point size in px (view settings)
     this._drag = null;
 
     this._ro = new ResizeObserver(() => this._resize());
@@ -32,6 +33,8 @@ export class BevView {
   setChannel(name) { this.channel = name; this._fitted = false; this.render(); }
   setPoseChannel(name) { this.poseChannel = name; this.render(); }
   setTrajectory(arr) { this.trajectory = arr; this.render(); }   // (N,3) or null
+  setDot(px) { this.dot = px; this.render(); }
+  refit() { this._fitted = false; this.render(); }               // re-frame the cloud
 
   setFrame(frame) {
     if (frame && frame.seq !== this._seq) {
@@ -125,7 +128,7 @@ export class BevView {
       if (sx < -2 || sy < -2 || sx > this.W + 2 || sy > this.H + 2) continue;
       const [r, g, b] = viridis((z - zlo) / (zhi - zlo));
       this.ctx.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},0.85)`;
-      this.ctx.fillRect(sx, sy, 1.8, 1.8);
+      this.ctx.fillRect(sx, sy, this.dot, this.dot);
     }
     this._drawTrajectory();
     this._drawEgo();

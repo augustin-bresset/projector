@@ -1,5 +1,7 @@
 // Draw an image channel (camera) onto a canvas. Raw images
 // (H,W,3) / (H,W,4) / (H,W), uint8 (or normalized if another dtype).
+// `bgr` swaps the R/B channels: rosbag extractions store OpenCV-order (bgr8)
+// arrays with no encoding metadata, so the order is a per-view user setting.
 
 function normalize(arr) {
   if (arr.dtype === "uint8") return arr.data;
@@ -11,7 +13,7 @@ function normalize(arr) {
   return out;
 }
 
-export function drawImage(canvas, arr) {
+export function drawImage(canvas, arr, bgr = false) {
   const [h, w] = arr.shape;
   const ch = arr.shape.length > 2 ? arr.shape[2] : 1;
   const src = normalize(arr);
@@ -19,10 +21,11 @@ export function drawImage(canvas, arr) {
   const ctx = canvas.getContext("2d");
   const img = ctx.createImageData(w, h);
   const px = img.data;
+  const [r, b] = bgr && ch > 1 ? [2, 0] : [0, 2];
   for (let i = 0; i < w * h; i++) {
     const o = i * 4, s = i * ch;
     if (ch === 1) { px[o] = px[o + 1] = px[o + 2] = src[s]; px[o + 3] = 255; }
-    else { px[o] = src[s]; px[o + 1] = src[s + 1]; px[o + 2] = src[s + 2]; px[o + 3] = ch > 3 ? src[s + 3] : 255; }
+    else { px[o] = src[s + r]; px[o + 1] = src[s + 1]; px[o + 2] = src[s + b]; px[o + 3] = ch > 3 ? src[s + 3] : 255; }
   }
   ctx.putImageData(img, 0, 0);
 }
