@@ -104,3 +104,10 @@ def test_endpoints(script):
         out = unpack_frame(ws.receive_bytes())
         assert "high_points" in out["channels"]
         assert len(out["channels"]["high_points"]) == len(out["channels"]["lidar"])
+
+    # unload: specs gone, active transforms dropped, virtual channel disappears
+    d = c.post("/api/plugins/unload", json={"path": script}).json()
+    assert d["plugins"]["specs"] == [] and d["plugins"]["active"] == []
+    assert not any(ch["name"] == "high_points" for ch in d["session"]["channels"])
+    r = c.post("/api/plugins/unload", json={})
+    assert r.status_code == 422

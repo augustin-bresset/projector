@@ -12,6 +12,7 @@ empty and open apairo datasets browsed via `/api/fs` + `/api/probe`.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from functools import partial
 from pathlib import Path
 
@@ -94,6 +95,31 @@ def create_app(
             frame = apply_transforms(frame, box["tf_active"])
         return seq, index, frame
 
+    # LRU of PACKED payloads: revisiting a frame (scrub back, loop wrap) skips
+    # disk reads, accumulation, transforms and packing entirely. Cleared whenever
+    # the served content changes (open/sync/plugins).
+    frame_cache: OrderedDict[tuple, bytes] = OrderedDict()
+    _CACHE_ENTRIES = 64
+    _CACHE_BYTES = 128 * 1024 * 1024
+
+    def _invalidate_frames() -> None:
+        frame_cache.clear()
+
+    def _packed(seq, index, back, fwd) -> bytes:
+        key = (seq, index, back, fwd)
+        hit = frame_cache.get(key)
+        if hit is not None:
+            frame_cache.move_to_end(key)
+            return hit
+        seq, index, frame = _framed(seq, index, back, fwd)
+        payload = pack_frame(seq, index, box["player"].n_frames(seq), frame, back=back, fwd=fwd)
+        frame_cache[(seq, index, back, fwd)] = payload
+        while len(frame_cache) > _CACHE_ENTRIES or (
+            len(frame_cache) > 1 and sum(len(v) for v in frame_cache.values()) > _CACHE_BYTES
+        ):
+            frame_cache.popitem(last=False)
+        return payload
+
     @app.get("/api/session")
     def get_session() -> dict:
         return session_dict()
@@ -154,12 +180,11 @@ def create_app(
             while True:
                 msg = await ws.receive_json()
                 back, fwd = int(msg.get("back", 0)), int(msg.get("fwd", 0))
-                call = partial(_framed, msg.get("seq"), int(msg.get("index", 0)), back, fwd)
+                call = partial(_packed, msg.get("seq"), int(msg.get("index", 0)), back, fwd)
                 try:
-                    seq, index, frame = await loop.run_in_executor(None, call)
+                    payload = await loop.run_in_executor(None, call)
                 except (KeyError, IndexError, ValueError):
                     continue  # e.g. request for the previous dataset — drop it
-                payload = pack_frame(seq, index, box["player"].n_frames(seq), frame, back=back, fwd=fwd)
                 await ws.send_bytes(payload)
         except WebSocketDisconnect:
             pass
@@ -201,6 +226,7 @@ def create_app(
             box["state_key"] = str(Path(params["path"]).expanduser().resolve())
             box["open_params"] = dict(params)
             box["was_async"] = bool(getattr(src, "was_async", False))
+            _invalidate_frames()
         except KeyError as e:
             raise HTTPException(422, f"missing field: {e}") from e
         except ImportError as e:
@@ -258,6 +284,18 @@ def create_app(
             box["tf_specs"][s.id] = s
         return _plugins_dict()
 
+    @app.post("/api/plugins/unload")
+    def plugins_unload(payload: dict = Body(...)) -> dict:
+        """Forget a script: drop its specs and deactivate the transforms it provided."""
+        path = payload.get("path")
+        if not path:
+            raise HTTPException(422, "missing field: path")
+        source = str(Path(path).expanduser().resolve())
+        box["tf_specs"] = {k: s for k, s in box["tf_specs"].items() if s.source != source}
+        box["tf_active"] = [t for t in box["tf_active"] if t.spec.source != source]
+        _invalidate_frames()
+        return {"session": session_dict(), "plugins": _plugins_dict()}
+
     @app.post("/api/plugins/active")
     def plugins_active(payload: dict = Body(...)) -> dict:
         """Set the active transform list: [{id, cloud?, params?}] — in order."""
@@ -281,6 +319,7 @@ def create_app(
             t.bind()
             active.append(t)
         box["tf_active"] = active
+        _invalidate_frames()
         return {"session": session_dict(), "plugins": _plugins_dict()}
 
     # -------------------------------------------------------- session sidecar
