@@ -23,6 +23,13 @@ export const CONFUSION = [
 
 const FALLBACK = [70, 70, 75];
 
+const LOD_BUDGET = 350000;   // points drawn while the camera moves (full cloud at rest)
+
+function gcd(a, b) {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
 export class CloudView {
   constructor(container) {
     this.container = container;
@@ -58,9 +65,16 @@ export class CloudView {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     container.appendChild(this.renderer.domElement);
 
+    // Motion LOD ("poor man's LOD"): buffers are built in a low-discrepancy
+    // order, so shrinking the draw range to a budget while the camera moves
+    // draws a uniform subset; the full cloud returns the moment it stops.
+    this.lodBudget = LOD_BUDGET;
+    this._moving = false;
+    this._count = 0;
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = false;   // no inertia: the camera stops as soon as you do
-    this.controls.addEventListener("change", () => this._invalidate());
+    this._hookControls();
     this.controlStyle = "orbit";
     this._tbRaf = null;
 
@@ -73,6 +87,32 @@ export class CloudView {
     this.points = new THREE.Points(this.geom, mat);
     this.points.frustumCulled = false;   // never cull the whole cloud
     this.scene.add(this.points);
+
+    // GPU picking: the same geometry rendered with per-point ids into a 1×1
+    // target (camera view-offset at the cursor), one pixel read back — O(1)
+    // per hover instead of the raycaster's O(N) walk.
+    this._pickTarget = new THREE.WebGLRenderTarget(1, 1);
+    this._pickBuf = new Uint8Array(4);
+    this._pickMat = new THREE.ShaderMaterial({
+      uniforms: { size: { value: mat.size }, scale: { value: 300 } },
+      vertexShader: `
+        attribute vec3 pid;
+        uniform float size, scale;
+        varying vec3 vPid;
+        void main() {
+          vPid = pid;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = size * (scale / -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        varying vec3 vPid;
+        void main() { gl_FragColor = vec4(vPid, 1.0); }`,
+    });
+    this._pickScene = new THREE.Scene();
+    const pickPoints = new THREE.Points(this.geom, this._pickMat);
+    pickPoints.frustumCulled = false;
+    this._pickScene.add(pickPoints);
 
     // Ego marker: X red (forward), Y green (left), Z blue (up); follows the pose channel.
     this.ego = new THREE.AxesHelper(2.2);
@@ -106,9 +146,8 @@ export class CloudView {
     window.addEventListener("keyup", this._onKeyUp, true);
     window.addEventListener("blur", this._onBlur);
 
-    // Hover info: nearest point under the cursor (throttled raycast).
+    // Hover info: the point under the cursor (throttled GPU pick).
     this._drawIdx = null;           // drawn index k → original point index i
-    this._raycaster = new THREE.Raycaster();
     this._tip = document.createElement("div");
     this._tip.className = "hover-tip";
     this._tip.hidden = true;
@@ -136,16 +175,8 @@ export class CloudView {
     const p = this.frame && this.channel ? this.frame.channels[this.channel] : null;
     if (!p || !this._drawIdx || this.geom.drawRange.count === 0) { this._tip.hidden = true; return; }
     const r = this.renderer.domElement.getBoundingClientRect();
-    const ndc = new THREE.Vector2(
-      ((e.clientX - r.left) / r.width) * 2 - 1,
-      -((e.clientY - r.top) / r.height) * 2 + 1,
-    );
-    this._raycaster.params.Points.threshold = Math.max(0.12, this.points.material.size);
-    this._raycaster.setFromCamera(ndc, this.camera);
-    const hits = this._raycaster.intersectObject(this.points, false);
-    const hit = hits.find((h) => h.index < this.geom.drawRange.count);
-    if (!hit) { this._tip.hidden = true; return; }
-    const i = this._drawIdx[hit.index];
+    const i = this._pickAt(e.clientX, e.clientY);
+    if (i === null) { this._tip.hidden = true; return; }
     const stride = p.shape[1];
     const at = (c) => p.data[i * stride + c];
     const parts = [`x ${at(0).toFixed(2)}  y ${at(1).toFixed(2)}  z ${at(2).toFixed(2)}`];
@@ -163,11 +194,60 @@ export class CloudView {
     this._tip.hidden = false;
   }
 
+  // One pixel of the id render under the cursor → original point index, or null.
+  _pickAt(clientX, clientY) {
+    const el = this.renderer.domElement;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const dpr = this.renderer.getPixelRatio();
+    const w = Math.floor(r.width * dpr), h = Math.floor(r.height * dpr);
+    const x = Math.min(w - 1, Math.max(0, Math.floor((clientX - r.left) * dpr)));
+    const y = Math.min(h - 1, Math.max(0, Math.floor((clientY - r.top) * dpr)));
+    this.camera.setViewOffset(w, h, x, y, 1, 1);
+    const prevColor = new THREE.Color();
+    this.renderer.getClearColor(prevColor);
+    const prevAlpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(this._pickTarget);
+    this.renderer.setClearColor(0x000000, 0);
+    this.renderer.clear();
+    this.renderer.render(this._pickScene, this.camera);
+    this.renderer.readRenderTargetPixels(this._pickTarget, 0, 0, 1, 1, this._pickBuf);
+    this.renderer.setRenderTarget(null);
+    this.renderer.setClearColor(prevColor, prevAlpha);
+    this.camera.clearViewOffset();
+    const b = this._pickBuf;
+    if (b[3] === 0) return null;                     // background pixel
+    const slot = b[0] + (b[1] << 8) + (b[2] << 16);
+    return slot < this._count ? this._drawIdx[slot] : null;
+  }
+
+  // -------------------------------------------------------- motion LOD
+  _hookControls() {
+    this.controls.addEventListener("change", () => this._invalidate());
+    this.controls.addEventListener("start", () => this._setMoving(true));
+    this.controls.addEventListener("end", () => this._setMoving(false));
+  }
+
+  _setMoving(on) {
+    if (this._moving === on) return;
+    this._moving = on;
+    this._applyDrawRange();
+    this._invalidate();
+  }
+
+  _applyDrawRange() {
+    this.geom.setDrawRange(0, this._moving ? Math.min(this._count, this.lodBudget) : this._count);
+  }
+
   setChannel(name) { this.channel = name; this._framed = false; this._rebuild(); }
   setPoseChannel(name) { this.poseChannel = name; this._rebuild(); }
   setColorBy(mode) { this.colorBy = mode; this._rev++; this._rebuild(); }
   setLabelings(labelings, luts) { this.labelings = labelings; this.luts = luts; }
-  setPointSize(s) { this.points.material.size = s; this._invalidate(); }
+  setPointSize(s) {
+    this.points.material.size = s;
+    this._pickMat.uniforms.size.value = s;
+    this._invalidate();
+  }
 
   // "orbit" (stable, z-up — no roll) | "trackball" (free tumbling: straighten a
   // cloud recorded without a mount TF). Trackball applies input inside update(),
@@ -188,7 +268,7 @@ export class CloudView {
       this.camera.up.set(0, 0, 1);         // restore the world-up convention
     }
     this.controls.target.copy(target);
-    this.controls.addEventListener("change", () => this._invalidate());
+    this._hookControls();
     this.controls.update();
     this.controlStyle = style;
     if (style === "trackball") this._trackballLoop();
@@ -393,6 +473,7 @@ export class CloudView {
     if (!p || p.shape[0] === 0) {
       this.lastWarning = null;
       this.lastMetrics = null;
+      this._count = 0;
       this.geom.setDrawRange(0, 0);
       this._invalidate();
       return;
@@ -422,15 +503,24 @@ export class CloudView {
                       && isFin(p.data[i * stride + 2]);
     const ctx = this._prepare(p, n, stride);
 
-    const pos = new Float32Array(n * 3), col = new Float32Array(n * 3);
+    const pos = new Float32Array(n * 3);
+    const col = new Uint8Array(n * 3);                   // normalized in the shader
+    const pid = new Uint8Array(n * 3);                   // drawn index as a color (GPU pick)
     const drawIdx = new Uint32Array(n);                  // drawn k → original i (hover)
+    // Low-discrepancy build order (golden-ratio stride, coprime with n): any
+    // prefix of the buffers is a uniform spatial subset, so the motion LOD can
+    // shrink the draw range with no per-frame shuffle.
+    let s = Math.max(1, Math.round(n * 0.618033988749895) % n);
+    while (gcd(s, n) !== 1) s++;
     let k = 0;
-    for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const i = (j * s) % n;
       if (!ok(i)) continue;
       const rgb = ctx.color(i);
       if (rgb === null) continue;                        // hidden class/category
       pos[k * 3] = p.data[i * stride]; pos[k * 3 + 1] = p.data[i * stride + 1]; pos[k * 3 + 2] = p.data[i * stride + 2];
-      col[k * 3] = rgb[0] / 255; col[k * 3 + 1] = rgb[1] / 255; col[k * 3 + 2] = rgb[2] / 255;
+      col[k * 3] = rgb[0]; col[k * 3 + 1] = rgb[1]; col[k * 3 + 2] = rgb[2];
+      pid[k * 3] = k & 255; pid[k * 3 + 1] = (k >> 8) & 255; pid[k * 3 + 2] = (k >> 16) & 255;
       drawIdx[k] = i;
       k++;
     }
@@ -451,8 +541,10 @@ export class CloudView {
     // `dispose`; replacing attributes without it leaks VRAM per rebuild).
     this.geom.dispose();
     this.geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    this.geom.setAttribute("color", new THREE.BufferAttribute(col, 3));
-    this.geom.setDrawRange(0, k);
+    this.geom.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+    this.geom.setAttribute("pid", new THREE.BufferAttribute(pid, 3, true));
+    this._count = k;
+    this._applyDrawRange();
     this.geom.computeBoundingSphere();
     if (!this._framed && k > 0) { this._framed = true; this._fit(this.geom.boundingSphere); }
 
@@ -522,6 +614,7 @@ export class CloudView {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this._pickMat.uniforms.scale.value = h * 0.5;   // sizeAttenuation, like PointsMaterial
     this._invalidate();
   }
 
@@ -551,8 +644,13 @@ export class CloudView {
   _startFly() {
     if (this._flyRaf !== null) return;
     this._flyLast = performance.now();
+    this._setMoving(true);
     const loop = () => {
-      if (this._disposed || this._flyKeys.size === 0) { this._flyRaf = null; return; }
+      if (this._disposed || this._flyKeys.size === 0) {
+        this._flyRaf = null;
+        this._setMoving(false);
+        return;
+      }
       const now = performance.now();
       // Cap dt: after a backgrounded tab the first delta can be huge.
       const dt = Math.min((now - this._flyLast) / 1000, 0.1);
@@ -626,6 +724,8 @@ export class CloudView {
     window.removeEventListener("blur", this._onBlur);
     this._ro.disconnect();
     this.controls.dispose();
+    this._pickTarget.dispose();
+    this._pickMat.dispose();
     this.scene.traverse((o) => {
       if (o.geometry) o.geometry.dispose();
       if (o.material) {
