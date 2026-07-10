@@ -121,7 +121,14 @@
           <div class="views-stack" id="views-stack"></div>
         </div>
         <div id="intermission" hidden>
-          <div class="card"><span>Intermission</span><small>no dataset — Open…</small></div>
+          <div class="card">
+            <span>Intermission</span>
+            <small id="intermission-msg">no dataset — Open…</small>
+            <div id="intermission-reopen" class="intermission-actions" hidden>
+              <button id="btn-reopen-last" class="tbtn primary"></button>
+              <button id="btn-browse" class="tbtn">Browse…</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
