@@ -280,7 +280,7 @@ function setPlaying(on) {
   if (playing === on) return;
   playing = on;
   $("btn-play").textContent = on ? "⏸" : "▶";
-  document.body.classList.toggle("playing", on);   // reels spin, film runs (CSS)
+  document.body.classList.toggle("playing", on);   // beam streams along the logo rays (CSS)
   if (on) playLoop();
 }
 
