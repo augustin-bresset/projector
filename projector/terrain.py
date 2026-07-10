@@ -336,13 +336,16 @@ def render_camera(
     max_dist: float = 130.0,
     fog_dist: float = 85.0,
     march_steps: int = 40,
+    yaw_deg: float = 0.0,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Ray-march a pinhole camera looking along +x against the scene. Returns a
-    `(h, w, 3)` uint8 image."""
-    forward = np.array([1.0, 0.0, 0.0])
+    """Ray-march a pinhole camera looking along +x (rotated `yaw_deg` about z — 180
+    for a rear-facing mount) against the scene. Returns a `(h, w, 3)` uint8 image."""
+    yaw = np.radians(yaw_deg)
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    forward = np.array([cy, sy, 0.0])
     up = np.array([0.0, 0.0, 1.0])
-    right = np.array([0.0, -1.0, 0.0])
+    right = np.array([sy, -cy, 0.0])  # forward rotated -90° about z
 
     rows, cols = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
     tan_y = np.tan(np.radians(fov_deg) / 2)
