@@ -1,4 +1,10 @@
-// 3D point cloud view (Three.js): free navigation (orbit/zoom/pan), z up.
+// 3D point cloud view: projector's data/display layer over the shared
+// point-cloud engine (src/engine/, copied from toaster — see PROVENANCE).
+// The engine owns rendering, camera controls (orbit/trackball), motion LOD,
+// the ground grid and the orbit-pivot crosshair; this class owns everything
+// projector-specific: per-frame channel decoding, color modes, confusion
+// metrics, ego/trajectory furniture, follow cameras and the hover tooltip.
+//
 // Bound to ONE point-cloud channel. Color modes (all client-side, live during
 // playback):
 //   height / intensity      scalar → viridis, with optional vmin/vmax bounds
@@ -7,8 +13,7 @@
 //   confusion               two labelings binarized → ignore/TN/TP/FP/FN + metrics
 
 import * as THREE from "three";
-import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { TrackballControls } from "three/addons/controls/TrackballControls.js";
+import { Viewer } from "../engine/viewer.js";
 import { viridis } from "../colors.js";
 import { invertRigid, poseToMatrix, translationOf } from "../pose.js";
 
@@ -23,12 +28,10 @@ export const CONFUSION = [
 
 const FALLBACK = [70, 70, 75];
 
-const LOD_BUDGET = 350000;   // points drawn while the camera moves (full cloud at rest)
-
-function gcd(a, b) {
-  while (b) [a, b] = [b, a % b];
-  return a;
-}
+const LOD_BUDGET = 350000; // points drawn while the camera moves (full cloud at rest)
+// A stream that has been quiet this long counts as paused: build the octree
+// so inspection gets the exact-fast picking and the octree motion cut.
+const PAUSE_OCTREE_MS = 400;
 
 export class CloudView {
   constructor(container) {
@@ -51,72 +54,61 @@ export class CloudView {
     this._seq = null;               // refit the camera when the sequence changes
     this._framed = false;
     this._sig = null;
-    this._raf = null;               // pending on-demand render (idle = zero GPU work)
     this._disposed = false;
+    this._octreeTimer = null;
 
-    this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0c0a08);
-
-    this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 5000);
-    this.camera.up.set(0, 0, 1);
-    this.camera.position.set(-30, -30, 25);
-
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
-    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
-    container.appendChild(this.renderer.domElement);
-
-    // Motion LOD ("poor man's LOD"): buffers are built in a low-discrepancy
-    // order, so shrinking the draw range to a budget while the camera moves
-    // draws a uniform subset; the full cloud returns the moment it stops.
-    this.lodBudget = LOD_BUDGET;
-    this._moving = false;
-    this._count = 0;
-
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = false;   // no inertia: the camera stops as soon as you do
-    this._hookControls();
+    // The engine viewport. Projector defaults: dark warm background, world-
+    // sized points (they shrink with distance), upright orbit controls.
+    this.viewer = new Viewer(container, { lodBudget: LOD_BUDGET });
+    this.viewer.setBackground(0x0c0a08);
+    this.viewer.setSizeAttenuation(true);
+    this.viewer.setPointSize(0.18);
+    this.viewer.setControlStyle("orbit");
     this.controlStyle = "orbit";
-    this._tbRaf = null;
+    this.camera = this.viewer.camera;
 
-    const grid = new THREE.GridHelper(200, 40, 0x2e2a24, 0x1b1815);
-    grid.rotation.x = Math.PI / 2;
-    this.scene.add(grid);
+    // Several 3D panels share the window: only the hovered one flies.
+    this._hover = false;
+    container.addEventListener("mouseenter", () => { this._hover = true; });
+    container.addEventListener("mouseleave", () => { this._hover = false; });
+    this.viewer.flyGate = () => this._hover;
 
-    this.geom = new THREE.BufferGeometry();
-    const mat = new THREE.PointsMaterial({ size: 0.18, vertexColors: true, sizeAttenuation: true });
-    this.points = new THREE.Points(this.geom, mat);
-    this.points.frustumCulled = false;   // never cull the whole cloud
-    this.scene.add(this.points);
-
-    // GPU picking: the same geometry rendered with per-point ids into a 1×1
-    // target (camera view-offset at the cursor), one pixel read back — O(1)
-    // per hover instead of the raycaster's O(N) walk.
+    // GPU picking for the hover tooltip: the engine's geometry rendered with
+    // per-point ids into a 1×1 target (camera view-offset at the cursor), one
+    // pixel read back — O(1) per hover whatever the cloud size or playback
+    // state. Shares the engine's geometry (and therefore its LOD draw list),
+    // and honours the engine's alpha mask so hidden points don't pick.
     this._pickTarget = new THREE.WebGLRenderTarget(1, 1);
     this._pickBuf = new Uint8Array(4);
     this._pickMat = new THREE.ShaderMaterial({
-      uniforms: { size: { value: mat.size }, scale: { value: 300 } },
+      uniforms: { size: { value: 0.18 }, scale: { value: 300 } },
       vertexShader: `
         attribute vec3 pid;
+        attribute float aalpha;
         uniform float size, scale;
         varying vec3 vPid;
+        varying float vAlpha;
         void main() {
           vPid = pid;
+          vAlpha = aalpha;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           gl_PointSize = size * (scale / -mv.z);
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: `
         varying vec3 vPid;
-        void main() { gl_FragColor = vec4(vPid, 1.0); }`,
+        varying float vAlpha;
+        void main() {
+          if (vAlpha < 0.5) discard;
+          gl_FragColor = vec4(vPid, 1.0);
+        }`,
     });
     this._pickScene = new THREE.Scene();
-    const pickPoints = new THREE.Points(this.geom, this._pickMat);
-    pickPoints.frustumCulled = false;
-    this._pickScene.add(pickPoints);
+    this._pickPoints = null;        // rebuilt whenever the engine geometry is replaced
 
     // Ego marker: X red (forward), Y green (left), Z blue (up); follows the pose channel.
     this.ego = new THREE.AxesHelper(2.2);
-    this.scene.add(this.ego);
+    this.viewer.scene.add(this.ego);
     this.cameraMode = "free";       // "free" | "follow" (translation-locked) | "bev" (top-down)
     this._lastEgo = null;           // ego position at the previous frame (follow delta)
 
@@ -129,19 +121,15 @@ export class CloudView {
     this.frameMode = "auto";        // "auto" | "world" | "ego"
     this._frameGuess = null;        // resolved auto guess for the current sequence
 
-    // Fly navigation (toaster-style), active on the hovered view: physical WASD
-    // move, Q/E down/up, arrows orbit, Shift boosts, R refits. Runs in its own
-    // rAF loop so held keys and simultaneous mouse-orbit combine smoothly.
-    this._flyKeys = new Set();
-    this._shift = false;
-    this._hover = false;
-    this._flyRaf = null;
-    this._flyLast = 0;
-    container.addEventListener("mouseenter", () => { this._hover = true; });
-    container.addEventListener("mouseleave", () => { this._hover = false; });
-    this._onKeyDown = (e) => this._flyKey(e, true);
-    this._onKeyUp = (e) => this._flyKey(e, false);
-    this._onBlur = () => this._flyKeys.clear();
+    // Arrow-key orbit + R refit, hover-gated. WASD/QE flying is the engine's
+    // job (gated through flyGate above); the arrows stay here because they
+    // must shadow the app's timeline stepping while a 3D view is hovered.
+    this._arrowKeys = new Set();
+    this._arrowRaf = null;
+    this._arrowLast = 0;
+    this._onKeyDown = (e) => this._arrowKey(e, true);
+    this._onKeyUp = (e) => this._arrowKey(e, false);
+    this._onBlur = () => this._arrowKeys.clear();
     window.addEventListener("keydown", this._onKeyDown, true);
     window.addEventListener("keyup", this._onKeyUp, true);
     window.addEventListener("blur", this._onBlur);
@@ -156,10 +144,12 @@ export class CloudView {
     container.addEventListener("mousemove", (e) => this._queueHover(e));
     container.addEventListener("mouseleave", () => { this._tip.hidden = true; });
 
-    this._ro = new ResizeObserver(() => this._resize());
+    // Panel splitters resize the container without any window resize.
+    this._ro = new ResizeObserver(() => {
+      this.viewer.resize();
+      this._pickMat.uniforms.scale.value = container.clientHeight * 0.5;
+    });
     this._ro.observe(container);
-    this._resize();
-    this._invalidate();
   }
 
   _queueHover(e) {
@@ -173,8 +163,8 @@ export class CloudView {
 
   _hoverInfo(e) {
     const p = this.frame && this.channel ? this.frame.channels[this.channel] : null;
-    if (!p || !this._drawIdx || this.geom.drawRange.count === 0) { this._tip.hidden = true; return; }
-    const r = this.renderer.domElement.getBoundingClientRect();
+    if (!p || !this._drawIdx) { this._tip.hidden = true; return; }
+    const r = this.viewer.renderer.domElement.getBoundingClientRect();
     const i = this._pickAt(e.clientX, e.clientY);
     if (i === null) { this._tip.hidden = true; return; }
     const stride = p.shape[1];
@@ -196,93 +186,53 @@ export class CloudView {
 
   // One pixel of the id render under the cursor → original point index, or null.
   _pickAt(clientX, clientY) {
-    const el = this.renderer.domElement;
+    if (!this._pickPoints) return null;
+    const renderer = this.viewer.renderer;
+    const el = renderer.domElement;
     const r = el.getBoundingClientRect();
     if (!r.width || !r.height) return null;
-    const dpr = this.renderer.getPixelRatio();
+    const dpr = renderer.getPixelRatio();
     const w = Math.floor(r.width * dpr), h = Math.floor(r.height * dpr);
     const x = Math.min(w - 1, Math.max(0, Math.floor((clientX - r.left) * dpr)));
     const y = Math.min(h - 1, Math.max(0, Math.floor((clientY - r.top) * dpr)));
     this.camera.setViewOffset(w, h, x, y, 1, 1);
     const prevColor = new THREE.Color();
-    this.renderer.getClearColor(prevColor);
-    const prevAlpha = this.renderer.getClearAlpha();
-    this.renderer.setRenderTarget(this._pickTarget);
-    this.renderer.setClearColor(0x000000, 0);
-    this.renderer.clear();
-    this.renderer.render(this._pickScene, this.camera);
-    this.renderer.readRenderTargetPixels(this._pickTarget, 0, 0, 1, 1, this._pickBuf);
-    this.renderer.setRenderTarget(null);
-    this.renderer.setClearColor(prevColor, prevAlpha);
+    renderer.getClearColor(prevColor);
+    const prevAlpha = renderer.getClearAlpha();
+    renderer.setRenderTarget(this._pickTarget);
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear();
+    renderer.render(this._pickScene, this.camera);
+    renderer.readRenderTargetPixels(this._pickTarget, 0, 0, 1, 1, this._pickBuf);
+    renderer.setRenderTarget(null);
+    renderer.setClearColor(prevColor, prevAlpha);
     this.camera.clearViewOffset();
     const b = this._pickBuf;
     if (b[3] === 0) return null;                     // background pixel
     const slot = b[0] + (b[1] << 8) + (b[2] << 16);
-    return slot < this._count ? this._drawIdx[slot] : null;
-  }
-
-  // -------------------------------------------------------- motion LOD
-  _hookControls() {
-    this.controls.addEventListener("change", () => this._invalidate());
-    this.controls.addEventListener("start", () => this._setMoving(true));
-    this.controls.addEventListener("end", () => this._setMoving(false));
-  }
-
-  _setMoving(on) {
-    if (this._moving === on) return;
-    this._moving = on;
-    this._applyDrawRange();
-    this._invalidate();
-  }
-
-  _applyDrawRange() {
-    this.geom.setDrawRange(0, this._moving ? Math.min(this._count, this.lodBudget) : this._count);
+    return slot < this._drawIdx.length ? this._drawIdx[slot] : null;
   }
 
   setChannel(name) { this.channel = name; this._framed = false; this._rebuild(); }
   setPoseChannel(name) { this.poseChannel = name; this._rebuild(); }
   setColorBy(mode) { this.colorBy = mode; this._rev++; this._rebuild(); }
   setLabelings(labelings, luts) { this.labelings = labelings; this.luts = luts; }
+  get pointSize() {
+    return this.viewer.material.uniforms.uSize.value;
+  }
+
   setPointSize(s) {
-    this.points.material.size = s;
+    this.viewer.setPointSize(s);
     this._pickMat.uniforms.size.value = s;
-    this._invalidate();
   }
 
   // "orbit" (stable, z-up — no roll) | "trackball" (free tumbling: straighten a
-  // cloud recorded without a mount TF). Trackball applies input inside update(),
-  // so it gets its own light rAF loop while active.
+  // cloud recorded without a mount TF).
   setControlStyle(style) {
     if (style === this.controlStyle) return;
-    const target = this.controls.target.clone();
-    this.controls.dispose();
-    if (style === "trackball") {
-      this.controls = new TrackballControls(this.camera, this.renderer.domElement);
-      this.controls.rotateSpeed = 2.4;
-      this.controls.zoomSpeed = 1.2;
-      this.controls.panSpeed = 0.8;
-      this.controls.staticMoving = true;   // no inertia, like the orbit config
-    } else {
-      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      this.controls.enableDamping = false;
-      this.camera.up.set(0, 0, 1);         // restore the world-up convention
-    }
-    this.controls.target.copy(target);
-    this._hookControls();
-    this.controls.update();
+    this.viewer.setControlStyle(style);
+    if (style === "orbit") this.camera.up.set(0, 0, 1); // restore the world-up convention
     this.controlStyle = style;
-    if (style === "trackball") this._trackballLoop();
-    this._invalidate();
-  }
-
-  _trackballLoop() {
-    if (this._tbRaf) return;
-    const loop = () => {
-      if (this._disposed || this.controlStyle !== "trackball") { this._tbRaf = null; return; }
-      this.controls.update();              // applies pending pointer input, fires "change"
-      this._tbRaf = requestAnimationFrame(loop);
-    };
-    this._tbRaf = requestAnimationFrame(loop);
   }
 
   // "free" (orbit) / "follow" (camera translates with the ego, orientation stays
@@ -290,15 +240,16 @@ export class CloudView {
   setCameraMode(mode) {
     this.cameraMode = mode;
     const ego = this.ego.position;
+    const controls = this.viewer.controls;
     if (mode === "bev") {
-      const h = Math.max(10, this.camera.position.distanceTo(this.controls.target));
-      this.controls.target.copy(ego);
+      const h = Math.max(10, this.camera.position.distanceTo(controls.target));
+      controls.target.copy(ego);
       this.camera.position.set(ego.x, ego.y, ego.z + h);
-      this.controls.update();
+      controls.update();
     } else if (mode === "follow" && this._lastEgo === null) {
       this._lastEgo = ego.clone();
     }
-    this._invalidate();
+    this.viewer.requestRender();
   }
 
   // Sequence trajectory (Float32 (N,3) decoded array, or null). Drawn in world
@@ -307,7 +258,7 @@ export class CloudView {
     if (this.trajLine) {
       this.trajLine.geometry.dispose();
       this.trajLine.material.dispose();
-      this.scene.remove(this.trajLine);
+      this.viewer.scene.remove(this.trajLine);
       this.trajLine = null;
     }
     if (arr && arr.shape[0] > 1) {
@@ -316,16 +267,16 @@ export class CloudView {
       const mat = new THREE.LineBasicMaterial({ color: 0xffb000, transparent: true, opacity: 0.7 });
       this.trajLine = new THREE.Line(geom, mat);
       this.trajLine.matrixAutoUpdate = false;
-      this.scene.add(this.trajLine);
+      this.viewer.scene.add(this.trajLine);
     }
     this._updateEgo();
-    this._invalidate();
+    this.viewer.requestRender();
   }
 
   setFrameMode(mode) {
     this.frameMode = mode;
     this._updateEgo();
-    this._invalidate();
+    this.viewer.requestRender();
   }
 
   // Effective cloud frame ("world" | "ego"): explicit mode, else the auto guess.
@@ -469,13 +420,13 @@ export class CloudView {
 
   // ------------------------------------------------------------- rebuild
   _rebuild() {
+    if (this._disposed) return;
     const p = this.frame && this.channel ? this.frame.channels[this.channel] : null;
     if (!p || p.shape[0] === 0) {
       this.lastWarning = null;
       this.lastMetrics = null;
-      this._count = 0;
-      this.geom.setDrawRange(0, 0);
-      this._invalidate();
+      this._drawIdx = null;
+      this._loadCloud(new Float32Array(0), new Float32Array(0), new Float32Array(0), null);
       return;
     }
 
@@ -487,8 +438,13 @@ export class CloudView {
         && this._sig.colorBy === sig.colorBy
         && this._sig.deps.length === sig.deps.length
         && this._sig.deps.every((d, i) => d === sig.deps[i])) {
+      // refit() lands here (same data, _framed reset): still reframe.
+      if (!this._framed && this._drawIdx && this._drawIdx.length > 0) {
+        this._framed = true;
+        this.viewer.frame();
+      }
       this._updateEgo();
-      this._invalidate();
+      this.viewer.requestRender();
       return;
     }
     this._sig = sig;
@@ -503,28 +459,29 @@ export class CloudView {
                       && isFin(p.data[i * stride + 2]);
     const ctx = this._prepare(p, n, stride);
 
+    // NaN points are dropped (they can't render); hidden classes/categories
+    // stay in the buffers with alpha 0 — the engine skips them in the shader
+    // AND the pick pass, and a visibility toggle only rewrites colors instead
+    // of paying a geometry rebuild.
     const pos = new Float32Array(n * 3);
-    const col = new Uint8Array(n * 3);                   // normalized in the shader
+    const col = new Float32Array(n * 3);
+    const alpha = new Float32Array(n);
     const pid = new Uint8Array(n * 3);                   // drawn index as a color (GPU pick)
     const drawIdx = new Uint32Array(n);                  // drawn k → original i (hover)
-    // Low-discrepancy build order (golden-ratio stride, coprime with n): any
-    // prefix of the buffers is a uniform spatial subset, so the motion LOD can
-    // shrink the draw range with no per-frame shuffle.
-    let s = Math.max(1, Math.round(n * 0.618033988749895) % n);
-    while (gcd(s, n) !== 1) s++;
     let k = 0;
-    for (let j = 0; j < n; j++) {
-      const i = (j * s) % n;
+    for (let i = 0; i < n; i++) {
       if (!ok(i)) continue;
       const rgb = ctx.color(i);
-      if (rgb === null) continue;                        // hidden class/category
       pos[k * 3] = p.data[i * stride]; pos[k * 3 + 1] = p.data[i * stride + 1]; pos[k * 3 + 2] = p.data[i * stride + 2];
-      col[k * 3] = rgb[0]; col[k * 3 + 1] = rgb[1]; col[k * 3 + 2] = rgb[2];
+      if (rgb !== null) {
+        col[k * 3] = rgb[0] / 255; col[k * 3 + 1] = rgb[1] / 255; col[k * 3 + 2] = rgb[2] / 255;
+        alpha[k] = 1;
+      }
       pid[k * 3] = k & 255; pid[k * 3 + 1] = (k >> 8) & 255; pid[k * 3 + 2] = (k >> 16) & 255;
       drawIdx[k] = i;
       k++;
     }
-    this._drawIdx = drawIdx;
+    this._drawIdx = drawIdx.subarray(0, k);
 
     if (ctx.counts) {
       const [, tn, tp, fp, fn] = ctx.counts;
@@ -537,19 +494,30 @@ export class CloudView {
       };
     }
 
-    // Release the previous attributes' GPU buffers (the renderer frees them on geometry
-    // `dispose`; replacing attributes without it leaks VRAM per rebuild).
-    this.geom.dispose();
-    this.geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-    this.geom.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
-    this.geom.setAttribute("pid", new THREE.BufferAttribute(pid, 3, true));
-    this._count = k;
-    this._applyDrawRange();
-    this.geom.computeBoundingSphere();
-    if (!this._framed && k > 0) { this._framed = true; this._fit(this.geom.boundingSphere); }
-
+    this._loadCloud(pos.subarray(0, k * 3), col.subarray(0, k * 3), alpha.subarray(0, k),
+                    pid.subarray(0, k * 3));
+    if (!this._framed && k > 0) {
+      this._framed = true;
+      this.viewer.frame();
+    }
     this._updateEgo();
-    this._invalidate();
+  }
+
+  // Hand the built buffers to the engine (streaming mode: no octree churn, no
+  // camera moves), attach the pick-id attribute, and rebind the pick scene to
+  // the engine's fresh geometry. The octree is built once the stream pauses.
+  _loadCloud(pos, col, alpha, pid) {
+    this.viewer.setCloud(pos, { octree: false, frame: false });
+    this.viewer.setColors(col, alpha);
+    if (pid) this.viewer.geom.setAttribute("pid", new THREE.BufferAttribute(pid, 3, true));
+    if (this._pickPoints) this._pickScene.remove(this._pickPoints);
+    this._pickPoints = new THREE.Points(this.viewer.geom, this._pickMat);
+    this._pickPoints.frustumCulled = false;
+    this._pickScene.add(this._pickPoints);
+    if (this._octreeTimer) clearTimeout(this._octreeTimer);
+    this._octreeTimer = setTimeout(() => {
+      if (!this._disposed) this.viewer.buildOctree();
+    }, PAUSE_OCTREE_MS);
   }
 
   _updateEgo() {
@@ -579,161 +547,100 @@ export class CloudView {
   // with the ego ("follow"), or stays straight above it ("bev").
   _followEgo() {
     const ego = this.ego.position;
+    const controls = this.viewer.controls;
     if (this.cameraMode === "follow") {
       if (this._lastEgo !== null) {
         const delta = ego.clone().sub(this._lastEgo);
         this.camera.position.add(delta);
-        this.controls.target.add(delta);
-        this.controls.update();
+        controls.target.add(delta);
+        controls.update();
       }
     } else if (this.cameraMode === "bev") {
       const h = Math.max(10, this.camera.position.z - ego.z);
-      this.controls.target.copy(ego);
+      controls.target.copy(ego);
       this.camera.position.set(ego.x, ego.y, ego.z + h);
-      this.controls.update();
+      controls.update();
     }
     this._lastEgo = ego.clone();
+    this.viewer.requestRender();
   }
 
-  // Frame the camera on the cloud once, so points are visible wherever they sit in space.
-  _fit(sphere) {
-    if (!sphere || !Number.isFinite(sphere.radius) || sphere.radius <= 0) return;
-    const c = sphere.center, r = sphere.radius;
-    this.controls.target.copy(c);
-    const d = r * 2.2 + 1;
-    this.camera.position.set(c.x - d * 0.7, c.y - d * 0.7, c.z + d * 0.6);
-    this.camera.near = Math.max(0.05, r / 100);
-    this.camera.far = r * 20 + 100;
-    this.camera.updateProjectionMatrix();
-    this.controls.update();
-  }
+  // ------------------------------------------------------------- arrow orbit
+  static ARROW_CODES = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
 
-  _resize() {
-    const w = this.container.clientWidth, h = this.container.clientHeight;
-    if (!w || !h) return;
-    this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
-    this._pickMat.uniforms.scale.value = h * 0.5;   // sizeAttenuation, like PointsMaterial
-    this._invalidate();
-  }
-
-  // ------------------------------------------------------------- fly navigation
-  static FLY_CODES = ["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE",
-                      "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"];
-
-  _flyKey(e, down) {
-    if (e.key === "Shift") { this._shift = down; return; }
-    if (!CloudView.FLY_CODES.includes(e.code) && e.code !== "KeyR") return;
+  _arrowKey(e, down) {
+    if (!CloudView.ARROW_CODES.includes(e.code) && e.code !== "KeyR") return;
     if (down) {
       if (!this._hover || e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target;
       if (t && ["INPUT", "SELECT", "TEXTAREA"].includes(t.tagName)) return;
       if (e.code === "KeyR") { this.refit(); return; }
-      // The hovered 3D view owns these keys (arrows would step the timeline).
+      // The hovered 3D view owns the arrows (they would step the timeline).
       e.preventDefault();
       e.stopPropagation();
-      this._flyKeys.add(e.code);
-      this._startFly();
+      this._arrowKeys.add(e.code);
+      this._startArrows();
     } else {
       // Always release, even if focus moved mid-hold — a stuck key drifts forever.
-      this._flyKeys.delete(e.code);
+      this._arrowKeys.delete(e.code);
     }
   }
 
-  _startFly() {
-    if (this._flyRaf !== null) return;
-    this._flyLast = performance.now();
-    this._setMoving(true);
+  _startArrows() {
+    if (this._arrowRaf !== null) return;
+    this._arrowLast = performance.now();
     const loop = () => {
-      if (this._disposed || this._flyKeys.size === 0) {
-        this._flyRaf = null;
-        this._setMoving(false);
-        return;
-      }
+      if (this._disposed || this._arrowKeys.size === 0) { this._arrowRaf = null; return; }
       const now = performance.now();
-      // Cap dt: after a backgrounded tab the first delta can be huge.
-      const dt = Math.min((now - this._flyLast) / 1000, 0.1);
-      this._flyLast = now;
-      this._fly(dt);
-      this.renderer.render(this.scene, this.camera);
-      this._flyRaf = requestAnimationFrame(loop);
+      const dt = Math.min((now - this._arrowLast) / 1000, 0.1);
+      this._arrowLast = now;
+      this._arrowStep(dt);
+      this._arrowRaf = requestAnimationFrame(loop);
     };
-    this._flyRaf = requestAnimationFrame(loop);
+    this._arrowRaf = requestAnimationFrame(loop);
   }
 
-  // One fly step: WASD/QE translate camera + orbit target together (the pivot
-  // stays in front, so a simultaneous mouse-drag orbits where you now look);
-  // arrows orbit around the target. Speed scales with the scene radius.
-  _fly(dt) {
-    const has = (c) => this._flyKeys.has(c);
-    const radius = (this.geom.boundingSphere && this.geom.boundingSphere.radius) || 20;
-
-    const fwd = this.camera.getWorldDirection(new THREE.Vector3());
-    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
-    const dir = new THREE.Vector3();
-    if (has("KeyW")) dir.add(fwd);
-    if (has("KeyS")) dir.sub(fwd);
-    if (has("KeyD")) dir.add(right);
-    if (has("KeyA")) dir.sub(right);
-    if (has("KeyE")) dir.add(up);
-    if (has("KeyQ")) dir.sub(up);
-    if (dir.lengthSq() > 0) {
-      dir.normalize().multiplyScalar(radius * (this._shift ? 1.5 : 0.5) * dt);
-      this.camera.position.add(dir);
-      this.controls.target.add(dir);
-    }
-
+  // Smooth orbit around the target on held arrows; the polar clamp avoids
+  // flipping over the poles in the z-up orbit style.
+  _arrowStep(dt) {
+    const has = (c) => this._arrowKeys.has(c);
+    const controls = this.viewer.controls;
     let dAz = 0, dPol = 0;
     if (has("ArrowLeft")) dAz += 1;
     if (has("ArrowRight")) dAz -= 1;
     if (has("ArrowUp")) dPol += 1;
     if (has("ArrowDown")) dPol -= 1;
-    if (dAz || dPol) {
-      const rate = 1.7 * dt;
-      const off = this.camera.position.clone().sub(this.controls.target);
-      if (dAz) off.applyAxisAngle(new THREE.Vector3(0, 0, 1), dAz * rate);
-      if (dPol) {
-        const axis = right.clone().setZ(0).normalize();
-        const cand = off.clone().applyAxisAngle(axis, dPol * rate);
-        const polar = cand.angleTo(new THREE.Vector3(0, 0, 1));
-        if (polar > 0.05 && polar < Math.PI - 0.05) off.copy(cand);   // no pole flip
-      }
-      this.camera.position.copy(this.controls.target).add(off);
+    if (!dAz && !dPol) return;
+    const rate = 1.7 * dt;
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
+    const off = this.camera.position.clone().sub(controls.target);
+    if (dAz) off.applyAxisAngle(new THREE.Vector3(0, 0, 1), dAz * rate);
+    if (dPol) {
+      const axis = right.setZ(0).normalize();
+      const cand = off.clone().applyAxisAngle(axis, dPol * rate);
+      const polar = cand.angleTo(new THREE.Vector3(0, 0, 1));
+      if (polar > 0.05 && polar < Math.PI - 0.05) off.copy(cand);   // no pole flip
     }
-    this.controls.update();
-  }
-
-  // On-demand rendering: draw once per dirty mark instead of a continuous loop.
-  _invalidate() {
-    if (this._raf !== null || this._disposed) return;
-    this._raf = requestAnimationFrame(() => {
-      this._raf = null;
-      this.renderer.render(this.scene, this.camera);
-    });
+    this.camera.position.copy(controls.target).add(off);
+    controls.update();
+    this.viewer.requestRender();
   }
 
   dispose() {
     this._disposed = true;
-    if (this._raf !== null) { cancelAnimationFrame(this._raf); this._raf = null; }
-    if (this._flyRaf !== null) { cancelAnimationFrame(this._flyRaf); this._flyRaf = null; }
-    if (this._tbRaf !== null) { cancelAnimationFrame(this._tbRaf); this._tbRaf = null; }
+    if (this._arrowRaf !== null) { cancelAnimationFrame(this._arrowRaf); this._arrowRaf = null; }
+    if (this._octreeTimer) { clearTimeout(this._octreeTimer); this._octreeTimer = null; }
     window.removeEventListener("keydown", this._onKeyDown, true);
     window.removeEventListener("keyup", this._onKeyUp, true);
     window.removeEventListener("blur", this._onBlur);
     this._ro.disconnect();
-    this.controls.dispose();
     this._pickTarget.dispose();
     this._pickMat.dispose();
-    this.scene.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material) {
-        if (o.material.map) o.material.map.dispose();
-        o.material.dispose();
-      }
-    });
-    this.renderer.dispose();
-    this.renderer.domElement.remove();
+    if (this.trajLine) {
+      this.trajLine.geometry.dispose();
+      this.trajLine.material.dispose();
+    }
+    this._tip.remove();
+    this.viewer.dispose();
   }
 }

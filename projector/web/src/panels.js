@@ -48,7 +48,7 @@ export class PanelManager {
           out.colorBy = p.view.colorBy;
           out.cameraMode = p.view.cameraMode;
           out.frameMode = p.view.frameMode;
-          out.size = p.view.points.material.size;
+          out.size = p.view.pointSize;
           out.controls = p.view.controlStyle;
         } else if (p.kind === "bev") {
           out.dot = p.view.dot;
@@ -575,7 +575,7 @@ export class PanelManager {
     sizeLab.textContent = "size";
     const size = document.createElement("input");
     size.type = "range"; size.min = "0.04"; size.max = "0.6"; size.step = "0.02";
-    size.value = String(view.points.material.size);
+    size.value = String(view.pointSize);
     size.oninput = () => view.setPointSize(+size.value);
     sizeLab.appendChild(size);
     box.appendChild(sizeLab);
