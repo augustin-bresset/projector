@@ -237,11 +237,12 @@ export class Viewer {
       // rotate/zoom/pan). Those are our fly keys: flying with S or D while
       // orbiting turned the drag into abrupt zooms/pans. Neutralize them.
       this.controls.keys = ["", "", ""];
-      this.controls.rotateSpeed = 3.0;
+      this.controls.rotateSpeed = 1.8;
       this.controls.zoomSpeed = 1.2;
       this.controls.panSpeed = 0.8;
     }
     this._controlStyle = style;
+    this.controls.minDistance = this.camera.near * 2; // never zoom through the pivot
     if (target) this.controls.target.copy(target);
     this.controls.addEventListener("start", () => {
       this._interacting = true;
@@ -501,7 +502,11 @@ export class Viewer {
     if (has("KeyE")) dir.add(up); // rerun-style: E up, Q down
     if (has("KeyQ")) dir.sub(up);
     if (dir.lengthSq() === 0) return; // opposite keys cancel out
-    const speed = this._radius * (this._shiftDown ? 1.5 : 0.5);
+    // Speed follows the camera-to-pivot distance (rerun's behaviour): zoomed
+    // in close you fly slow and precise, zoomed out you cross the scene fast.
+    // The floor keeps a camera parked on the pivot able to leave.
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    const speed = Math.max(dist, this._radius * 0.02) * (this._shiftDown ? 1.5 : 0.5);
     // Cap dt: after the tab was backgrounded the first delta can be huge, and
     // one giant step would teleport the camera out of the scene.
     dir.normalize().multiplyScalar(speed * Math.min(dt, 0.1));
@@ -717,6 +722,7 @@ export class Viewer {
     this.camera.position.copy(s.center.clone().add(off));
     this.camera.near = Math.max(s.radius / 1000, 0.001);
     this.camera.far = s.radius * 50;
+    this.controls.minDistance = this.camera.near * 2; // rerun's MIN_ORBIT_DISTANCE
     this.camera.updateProjectionMatrix();
     this._updateProjScale();
     this.controls.update();
