@@ -280,7 +280,7 @@ function setPlaying(on) {
   if (playing === on) return;
   playing = on;
   $("btn-play").textContent = on ? "⏸" : "▶";
-  document.body.classList.toggle("playing", on);   // reels spin, film runs (CSS)
+  document.body.classList.toggle("playing", on);   // beam streams along the logo rays (CSS)
   if (on) playLoop();
 }
 
@@ -365,9 +365,50 @@ async function initSession(s) {
       paintLoop();
     }
   } else {
-    $("status").textContent = "no dataset — Open…";
     syncFooter();
+    await offerLastOrOpen();
+  }
+}
+
+// Nothing loaded yet: offer to reopen the most recently opened dataset (any
+// run), falling back to the browse modal if there is none or it fails.
+let lastParams = null;
+
+async function offerLastOrOpen() {
+  $("intermission-reopen").hidden = true;
+  $("intermission-msg").textContent = "no dataset — Open…";
+  try {
+    lastParams = (await api.last()).params;
+  } catch {
+    lastParams = null;   // stateless server (custom source) — no last dataset to offer
+  }
+  if (lastParams && lastParams.path) {
+    if (fsPath === null) fsPath = lastParams.path.replace(/\/[^/]*$/, "") || "/";
+    const name = lastParams.path.replace(/\/+$/, "").split("/").pop() || lastParams.path;
+    $("intermission-msg").textContent = "no dataset open";
+    $("btn-reopen-last").textContent = `Reopen "${name}"`;
+    $("btn-reopen-last").title = lastParams.path;
+    $("intermission-reopen").hidden = false;
+    $("status").textContent = `no dataset — reopen "${name}", or Open…`;
+  } else {
+    $("status").textContent = "no dataset — Open…";
     openModal();
+  }
+}
+
+async function reopenLast() {
+  if (!lastParams) return;
+  $("btn-reopen-last").disabled = true;
+  $("intermission-msg").textContent = "reopening…";
+  $("status").textContent = "reopening…";
+  try {
+    const s = await api.open(lastParams);
+    initSession(s);
+  } catch (e) {
+    $("status").textContent = String(e.message || e);
+    openModal();   // e.g. the path no longer exists — let the user browse instead
+  } finally {
+    $("btn-reopen-last").disabled = false;
   }
 }
 
@@ -744,6 +785,8 @@ async function boot() {
   $("sync-apply").onclick = applySync;
 
   $("btn-open").onclick = () => openModal("dataset");
+  $("btn-reopen-last").onclick = reopenLast;
+  $("btn-browse").onclick = () => openModal("dataset");
   $("btn-transforms").onclick = () => toggleTransformsMenu();
   $("btn-load-script").onclick = () => { toggleTransformsMenu(false); openModal("script"); };
   $("btn-apply-plugins").onclick = applyPlugins;

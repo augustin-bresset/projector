@@ -79,6 +79,7 @@ export const api = {
   probe: (path) => getJson(`/api/probe?path=${encodeURIComponent(path)}`),
   open: (payload) => postJson("/api/open", payload),
   sync: (payload) => postJson("/api/sync", payload),
+  last: () => getJson("/api/last"),
   // Session sidecar (per dataset, stored server-side in the user data dir).
   state: () => getJson("/api/state"),
   saveState: (state) => postJson("/api/state", state),

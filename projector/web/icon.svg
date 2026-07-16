@@ -1,13 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <rect width="64" height="64" rx="13" fill="#100e0b"/>
-  <!-- film projector, profile: feed reel, take-up reel, body, lens, beam -->
-  <g transform="translate(5,10) scale(1.9)">
-    <circle cx="7" cy="5.4" r="4.4" fill="none" stroke="#ece7dd" stroke-width="1.7"/>
-    <circle cx="7" cy="5.4" r="1.2" fill="#ece7dd"/>
-    <circle cx="15.5" cy="7.6" r="2.9" fill="none" stroke="#ece7dd" stroke-width="1.7"/>
-    <circle cx="15.5" cy="7.6" r="0.9" fill="#ece7dd"/>
-    <rect x="2.5" y="11" width="16" height="8" rx="1" fill="#ece7dd"/>
-    <rect x="18.5" y="13" width="2.4" height="4" fill="#ece7dd"/>
-    <polygon points="20.9,12.6 27.5,9.2 27.5,20.8 20.9,17.4" fill="#ffb000" opacity="0.85"/>
+  <!-- projector beam: quarter-circle sunburst fan from a base -->
+  <g stroke="#ffb000" stroke-width="2.6" stroke-linecap="round">
+    <line x1="32" y1="55" x2="15.3" y2="35.1"/>
+    <line x1="32" y1="55" x2="18" y2="30.8"/>
+    <line x1="32" y1="55" x2="21.7" y2="26.8"/>
+    <line x1="32" y1="55" x2="26.4" y2="23.5"/>
+    <line x1="32" y1="55" x2="32" y2="21"/>
+    <line x1="32" y1="55" x2="37.6" y2="23.5"/>
+    <line x1="32" y1="55" x2="42.3" y2="26.8"/>
+    <line x1="32" y1="55" x2="46" y2="30.8"/>
+    <line x1="32" y1="55" x2="48.7" y2="35.1"/>
   </g>
+  <rect x="12" y="53.5" width="40" height="4" rx="2" fill="#ffb000"/>
 </svg>

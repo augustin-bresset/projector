@@ -54,6 +54,10 @@ def create_app(
         "tf_specs": {},  # id → TransformSpec
         "tf_active": [],  # [ActiveTransform]
     }
+    if open_params:
+        from .state import save_last
+
+        save_last(dict(open_params))
     app = FastAPI(title=f"{title} API", version="0.1")
 
     # The front may be served from another origin (dev): allow everything.
@@ -227,6 +231,9 @@ def create_app(
             box["open_params"] = dict(params)
             box["was_async"] = bool(getattr(src, "was_async", False))
             _invalidate_frames()
+            from .state import save_last
+
+            save_last(dict(params))
         except KeyError as e:
             raise HTTPException(422, f"missing field: {e}") from e
         except ImportError as e:
@@ -321,6 +328,14 @@ def create_app(
         box["tf_active"] = active
         _invalidate_frames()
         return {"session": session_dict(), "plugins": _plugins_dict()}
+
+    @app.get("/api/last")
+    def get_last() -> dict:
+        """Open params of the most recently opened dataset (any run) — lets the
+        viewer offer a reopen prompt when it starts with nothing loaded."""
+        from .state import load_last
+
+        return {"params": load_last()}
 
     # -------------------------------------------------------- session sidecar
     @app.get("/api/state")
