@@ -1,3 +1,7 @@
-Copied verbatim from toaster (toaster/web/js/engine/) at commit 33bf536.
-Do not edit here — fix in toaster and re-copy, so every project ships the
-same engine.
+This three.js point-cloud engine is the shared engine of the viz ecosystem,
+and projector is its home. Edit it here: every consumer (toaster, apairo_visu
+studio) serves it from projector's install via `projector.web_engine_dir()`,
+so one fix reaches every tool.
+
+Consumers must not keep a private copy of these files. Historically the engine
+was developed in toaster and re-copied here; it is now unified in projector.
