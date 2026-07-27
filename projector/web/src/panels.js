@@ -215,7 +215,7 @@ export class PanelManager {
       const camSel = document.createElement("select");
       camSel.className = "cam-sel";
       camSel.title = "Camera mode";
-      fillSelect(camSel, [["free", "Free cam"], ["follow", "Follow ego"], ["bev", "Top-down ego"]]);
+      fillSelect(camSel, [["free", "Free cam"], ["follow", "Follow ego"], ["bev", "Top-down ego"], ["sensor", "Sensor view"]]);
       camSel.disabled = !this.poseKey;
       camSel.onchange = () => panel.view.setCameraMode(camSel.value);
 

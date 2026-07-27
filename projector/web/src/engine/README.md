@@ -35,7 +35,8 @@ const { colors, alpha } = viewer.colorArrays(); // live buffers for in-place pat
 viewer.commitColors(touchedIndices);    // …then upload only the dirty ranges
 viewer.pick(clientX, clientY);          // nearest visible point index, or -1
 viewer.pickBox(x0, y0, x1, y1);         // visible point indices in a screen rect
-viewer.frame();                         // reset camera to frame the cloud
+viewer.frame();                         // reset camera to frame the cloud (restores the base lens)
+viewer.setCameraPose({position, forward, up, fov}); // jump to an explicit pose (e.g. a robot sensor viewpoint)
 viewer.setPointSize(size); viewer.setRound(bool); viewer.setBackground(hex);
 viewer.setSizeAttenuation(bool);        // on: size is metres and shrinks with distance
 viewer.setControlStyle("trackball"|"orbit"); // free tumble vs upright orbit

@@ -125,6 +125,7 @@ export class Viewer {
     this.scene.background = new THREE.Color(0x1f2430);
     this.camera = new THREE.PerspectiveCamera(55, this._aspect(), 0.01, 100000);
     this.camera.up.set(0, 0, 1); // Z-up, the natural convention for lidar
+    this._baseFov = this.camera.fov; // restored on reframe after a setCameraPose lens change
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -723,6 +724,35 @@ export class Viewer {
     this.camera.near = Math.max(s.radius / 1000, 0.001);
     this.camera.far = s.radius * 50;
     this.controls.minDistance = this.camera.near * 2; // rerun's MIN_ORBIT_DISTANCE
+    this.camera.fov = this._baseFov; // undo any sensor-view lens; a refit is a fresh look
+    this.camera.updateProjectionMatrix();
+    this._updateProjScale();
+    this.controls.update();
+    this._requestRender();
+  }
+
+  // Place the camera at an explicit world pose — e.g. jump to a robot sensor's
+  // viewpoint so the cloud is seen exactly as that sensor saw it. Convention-
+  // agnostic on purpose: `position` is the eye, the view looks along `forward`
+  // (a world-space direction) with `up` the screen-up hint, and `fov` (vertical
+  // degrees) can be set from a camera's intrinsics to reproduce its framing —
+  // pass fov = null to keep the current lens. The orbit pivot is dropped onto
+  // the scene ahead (pivotDistance, default the scene radius) so tumbling and
+  // zoom stay natural once you land. Callers convert whatever extrinsic they
+  // hold (a 4x4, a quaternion, an optical convention) into these three vectors;
+  // the engine stays free of any sensor-frame assumptions.
+  setCameraPose({ position, forward, up = [0, 0, 1], fov = null, pivotDistance = null } = {}) {
+    if (!position || !forward) return;
+    const eye = new THREE.Vector3().fromArray(position);
+    const dir = new THREE.Vector3().fromArray(forward);
+    if (dir.lengthSq() === 0) return; // a zero forward has no orientation
+    dir.normalize();
+    this.camera.up.fromArray(up);
+    this.camera.position.copy(eye);
+    const dist = pivotDistance ?? Math.max(this._radius, 1);
+    this.controls.target.copy(eye).addScaledVector(dir, dist);
+    this.camera.lookAt(this.controls.target);
+    if (fov != null) this.camera.fov = fov;
     this.camera.updateProjectionMatrix();
     this._updateProjScale();
     this.controls.update();

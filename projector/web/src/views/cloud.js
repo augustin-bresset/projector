@@ -32,6 +32,9 @@ const LOD_BUDGET = 350000; // points drawn while the camera moves (full cloud at
 // A stream that has been quiet this long counts as paused: build the octree
 // so inspection gets the exact-fast picking and the octree motion cut.
 const PAUSE_OCTREE_MS = 400;
+// Sensor-view lens until a camera's real intrinsics are wired in (apairo
+// calibration). A wide-ish vertical FOV reads like a forward driving camera.
+const SENSOR_FOV = 60;
 
 export class CloudView {
   constructor(container) {
@@ -236,12 +239,15 @@ export class CloudView {
   }
 
   // "free" (orbit) / "follow" (camera translates with the ego, orientation stays
-  // yours) / "bev" (top-down, centered on the ego).
+  // yours) / "bev" (top-down, centered on the ego) / "sensor" (ride the ego's
+  // own viewpoint — see the scene as the robot's forward camera does).
   setCameraMode(mode) {
     this.cameraMode = mode;
     const ego = this.ego.position;
     const controls = this.viewer.controls;
-    if (mode === "bev") {
+    if (mode === "sensor") {
+      this._jumpToSensor();
+    } else if (mode === "bev") {
       const h = Math.max(10, this.camera.position.distanceTo(controls.target));
       controls.target.copy(ego);
       this.camera.position.set(ego.x, ego.y, ego.z + h);
@@ -250,6 +256,25 @@ export class CloudView {
       this._lastEgo = ego.clone();
     }
     this.viewer.requestRender();
+  }
+
+  // Teleport the view to the ego/sensor pose: eye at the robot, looking along
+  // its forward axis (ego local +X, matching the AxesHelper convention), with
+  // its up (+Z). This is the reusable skeleton for camera-color projection —
+  // once apairo calibration is wired the real camera↔lidar extrinsic and the
+  // intrinsic FOV replace this ego-frame stand-in, and setColors carries the
+  // back-projected RGB. Works in both cloud frames: in ego frame the sensor is
+  // the origin, in world frame `this.ego` already holds the world pose.
+  _jumpToSensor() {
+    const q = this.ego.quaternion;
+    const forward = new THREE.Vector3(1, 0, 0).applyQuaternion(q);
+    const up = new THREE.Vector3(0, 0, 1).applyQuaternion(q);
+    this.viewer.setCameraPose({
+      position: this.ego.position.toArray(),
+      forward: forward.toArray(),
+      up: up.toArray(),
+      fov: SENSOR_FOV,
+    });
   }
 
   // Sequence trajectory (Float32 (N,3) decoded array, or null). Drawn in world
@@ -548,7 +573,9 @@ export class CloudView {
   _followEgo() {
     const ego = this.ego.position;
     const controls = this.viewer.controls;
-    if (this.cameraMode === "follow") {
+    if (this.cameraMode === "sensor") {
+      this._jumpToSensor();                 // re-lock to the moving sensor pose
+    } else if (this.cameraMode === "follow") {
       if (this._lastEgo !== null) {
         const delta = ego.clone().sub(this._lastEgo);
         this.camera.position.add(delta);
