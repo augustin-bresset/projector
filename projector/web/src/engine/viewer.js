@@ -175,6 +175,33 @@ export class Viewer {
       resize: () => this._resize(),
     };
     for (const [type, fn] of Object.entries(this._winHandlers)) window.addEventListener(type, fn);
+
+    // WebGL context-loss recovery. On the desktop shell's QtWebEngine (Vulkan /
+    // GBM fallback) the GL context can be dropped mid-session — the cloud just
+    // vanishes with no error anywhere. three preventDefaults the loss (keeping it
+    // restorable) and re-inits its GL objects on restore, but this engine renders
+    // on demand: with the rAF loop parked, nothing repaints and the view stays
+    // blank until the next interaction. So on restore we nudge our buffers (three
+    // recreates GL objects lazily) and schedule a frame — the scene comes back on
+    // its own. preventDefault on loss is belt-and-braces (three does it too).
+    this._glHandlers = {
+      webglcontextlost: (e) => {
+        e.preventDefault();
+        this._interacting = false;
+      },
+      webglcontextrestored: () => {
+        if (this.geom) {
+          for (const name of ["position", "acolor", "aalpha"]) {
+            const a = this.geom.getAttribute(name);
+            if (a) a.needsUpdate = true;
+          }
+        }
+        this._requestRender();
+      },
+    };
+    for (const [type, fn] of Object.entries(this._glHandlers)) {
+      this.renderer.domElement.addEventListener(type, fn, false);
+    }
     // "change" fires on every actual camera move (drag, wheel zoom, fly — the
     // controls detect external position changes in update() — and the arrow-key
     // rotations). That is the motion signal for the LOD: a plain click fires
@@ -792,6 +819,7 @@ export class Viewer {
   // the single-viewer toaster page never needs it.
   dispose() {
     for (const [type, fn] of Object.entries(this._winHandlers)) window.removeEventListener(type, fn);
+    for (const [type, fn] of Object.entries(this._glHandlers)) this.renderer.domElement.removeEventListener(type, fn, false);
     if (this._octreeWorker) {
       this._octreeWorker.terminate();
       this._octreeWorker = null;
