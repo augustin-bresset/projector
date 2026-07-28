@@ -48,17 +48,13 @@ PRED_LABELS = LabelSet(
 )
 
 
-def _labels_from_materials(
-    materials: np.ndarray, rng: np.random.Generator
-) -> tuple[np.ndarray, np.ndarray]:
+def _labels_from_materials(materials: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """Scan material ids -> a traversability ground truth and a noisy fake prediction.
 
     ``ground``/``grass`` are traversable, ``trunk``/``canopy`` are obstacles; a few
     points are dropped to ``unlabeled`` and the prediction flips ~12 % of the labels.
     """
-    gt = np.where(
-        materials == terrain.MISS, 0, np.where(materials <= terrain.GRASS, 1, 2)
-    ).astype(np.int32)
+    gt = np.where(materials == terrain.MISS, 0, np.where(materials <= terrain.GRASS, 1, 2)).astype(np.int32)
     gt[rng.random(len(gt)) < 0.05] = 0  # a few unlabeled points
     pred = (gt == 1).astype(np.int32)  # binary traversable / not
     flip = rng.random(len(pred)) < 0.12

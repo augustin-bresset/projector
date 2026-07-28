@@ -41,7 +41,9 @@ app = [
 projector = "projector.cli:main"
 
 [dependency-groups]
-dev = ["pytest", "httpx2", "ruff"]  # httpx2: required by fastapi.testclient (API tests)
+# ruff pinned to the pre-commit rev (.pre-commit-config.yaml) so the hook and
+# manual runs format identically. httpx2: required by fastapi.testclient (API tests).
+dev = ["pytest", "httpx2", "ruff==0.15.22", "pre-commit"]
 
 [tool.ruff]
 line-length = 110
