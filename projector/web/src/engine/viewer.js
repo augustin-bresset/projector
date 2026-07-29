@@ -365,11 +365,18 @@ export class Viewer {
       if (s && Number.isFinite(s.radius) && s.radius > 0) this._radius = s.radius;
       this._requestRender();
     }
-    // The grid is scale-derived; rebuilding it for every streamed frame whose
-    // extent wobbles a few percent would be pure churn.
+    // The grid geometry is scale-derived; rebuilding it for every streamed frame
+    // whose extent wobbles a few percent would be pure churn. Its position,
+    // though, tracks the cloud every frame so the ground plane stays underfoot —
+    // including a TF-resolved frame that sits far from the world origin.
     if (!this._gridRadius || Math.abs(this._radius - this._gridRadius) > this._gridRadius * 0.25) {
       this.grid.rebuild(this._radius);
       this._gridRadius = this._radius;
+    }
+    this.geom.computeBoundingBox();
+    const bb = this.geom.boundingBox;
+    if (bb && Number.isFinite(bb.min.z)) {
+      this.grid.place((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, bb.min.z);
     }
   }
 

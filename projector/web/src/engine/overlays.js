@@ -16,14 +16,17 @@ function smoothstep(edge0, edge1, x) {
 // fade instead of a hard edge.
 const GRID_VERT = `
   varying vec3 vWorldPos;
+  varying vec2 vLocalXY;
   void main() {
     vec4 worldPos = modelMatrix * vec4(position, 1.0);
     vWorldPos = worldPos.xyz;
+    vLocalXY = position.xy; // plane-local, so the edge fade tracks the grid wherever it sits
     gl_Position = projectionMatrix * viewMatrix * worldPos;
   }`;
 
 const GRID_FRAG = `
   varying vec3 vWorldPos;
+  varying vec2 vLocalXY;
   uniform vec3 uMinorColor;
   uniform vec3 uMajorColor;
   uniform float uCellSize;     // minor line spacing (1 m)
@@ -57,7 +60,7 @@ const GRID_FRAG = `
     // fade toward the plane's own edge so that boundary never shows as a hard
     // cutoff either.
     float camFade = 1.0 - smoothstep(uFadeDistance * 0.4, uFadeDistance, distance(vWorldPos, cameraPosition));
-    float edgeFade = 1.0 - smoothstep(uPlaneHalf * 0.7, uPlaneHalf, length(vWorldPos.xy));
+    float edgeFade = 1.0 - smoothstep(uPlaneHalf * 0.7, uPlaneHalf, length(vLocalXY));
 
     float alpha = coverage * uOpacity * mix(1.0, 1.5, major) * camFade * edgeFade;
     if (alpha <= 0.002) discard;
@@ -103,6 +106,14 @@ export class ReferenceGrid {
     // no rotation needed for our Z-up world, unlike GridHelper's default XZ.
     this.mesh = new THREE.Mesh(geom, material);
     this.scene.add(this.mesh);
+  }
+
+  // Move the grid under the cloud: its XY centre, at the ground (min Z). Keeps
+  // the ground plane underfoot wherever the points sit — including a TF-resolved
+  // frame placed far from the world origin, which otherwise leaves the grid
+  // stranded at (0,0,0) and out of view.
+  place(x, y, z) {
+    if (this.mesh) this.mesh.position.set(x, y, z);
   }
 
   dispose() {
