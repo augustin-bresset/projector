@@ -381,8 +381,26 @@ export class Viewer {
     this.geom.computeBoundingBox();
     const bb = this.geom.boundingBox;
     if (bb && Number.isFinite(bb.min.z)) {
-      this.grid.place((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, bb.min.z);
+      this.grid.place((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, this._groundLevel());
     }
+  }
+
+  // A robust ground height for the grid: the ~2nd percentile of Z from a sample,
+  // not the bounding box's min — a single stray low return (a lidar dropout, a
+  // point under a bush) would otherwise sink the grid metres below the real
+  // ground. Sampled so it stays cheap on million-point clouds.
+  _groundLevel() {
+    const pos = this.geom && this.geom.getAttribute("position");
+    if (!pos || !pos.count) return 0;
+    const stride = Math.max(1, Math.floor(pos.count / 4000));
+    const zs = [];
+    for (let i = 0; i < pos.count; i += stride) {
+      const z = pos.getZ(i);
+      if (Number.isFinite(z)) zs.push(z);
+    }
+    if (!zs.length) return 0;
+    zs.sort((a, b) => a - b);
+    return zs[Math.floor(zs.length * 0.02)];
   }
 
   // Build (or rebuild) the octree for the current cloud — for streaming
