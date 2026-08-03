@@ -139,14 +139,13 @@ export class Viewer {
     this._dirty = true;
     this._rafPending = false;
     this._interacting = false; // between the controls' "start" and "end" events
-    // Fly navigation on physical WASD + Space/Shift (`e.code`, layout-independent):
-    // forward / back along the view axis, strafe left / right, and Space / Shift
-    // up / down along the screen's vertical. Keydown/keyup only track which keys
-    // are held; the motion itself runs per-frame in _tick so it is smooth and
-    // diagonals (e.g. forward+left) combine. Shift descends only while no mouse
-    // button is down, so Shift+click stays a selection modifier for the host.
+    // Fly navigation on physical WASD + QE (`e.code`, so layout-independent):
+    // forward / back along the view axis, strafe left / right, and Q/E down /
+    // up rerun-style along the screen's vertical. Keydown/keyup only track
+    // which keys are held; the motion itself runs per-frame in _tick so it is
+    // smooth and diagonals (e.g. forward+left) combine.
     this._flyKeys = new Set();
-    this._pointerDown = false; // gates Shift-descend so Shift+click can still select
+    this._shiftDown = false; // Shift boosts fly speed (it is not a fly key itself)
     this._radius = 10; // scene scale — refreshed by frame()
     this._clock = new THREE.Clock();
 
@@ -158,17 +157,18 @@ export class Viewer {
     // "end" event above never fires, _interacting stays stuck true, and the
     // rAF loop below spins forever instead of parking — which is exactly the
     // Vulkan-fallback Oilpan leak this render-on-demand scheme exists to avoid.
-    // Fly-key tracking, plus a window-level pointerup/blur so a release outside
-    // the canvas can't leave the Shift-descend gate stuck closed.
+    // Shift toggles the box-mode button map; the rest is fly-key tracking.
     this._winHandlers = {
-      keydown: (e) => this._flyKey(e, true),
-      keyup: (e) => this._flyKey(e, false),
-      pointerup: () => {
-        this._pointerDown = false;
+      keydown: (e) => {
+        if (e.key === "Shift") this._applyMouseButtons(true);
+        this._flyKey(e, true);
+      },
+      keyup: (e) => {
+        if (e.key === "Shift") this._applyMouseButtons(false);
+        this._flyKey(e, false);
       },
       blur: () => {
         this._interacting = false;
-        this._pointerDown = false;
         this._flyKeys.clear();
         this._requestRender();
       },
@@ -185,11 +185,6 @@ export class Viewer {
     // recreates GL objects lazily) and schedule a frame — the scene comes back on
     // its own. preventDefault on loss is belt-and-braces (three does it too).
     this._glHandlers = {
-      // Any button down over the canvas closes the Shift-descend gate, so a
-      // Shift+click/drag reads as a selection modifier, not a fly-down.
-      pointerdown: () => {
-        this._pointerDown = true;
-      },
       webglcontextlost: (e) => {
         e.preventDefault();
         this._interacting = false;
@@ -295,7 +290,7 @@ export class Viewer {
       this.orbitIndicator.poke(now);
       this._requestRender();
     });
-    this._applyMouseButtons();
+    this._applyMouseButtons(false);
     this.controls.update();
     this._requestRender();
   }
@@ -519,13 +514,14 @@ export class Viewer {
   setBoxMode(on) {
     this._boxMode = on;
     this.controls.enabled = true;
-    this._applyMouseButtons();
+    this._applyMouseButtons(false);
   }
 
   _flyKey(e, down) {
-    // WASD strafe/advance, Space up, Shift down — physical codes, so layout-
-    // independent (WASD is ZQSD on AZERTY, Shift is either side).
-    if (!["KeyW", "KeyA", "KeyS", "KeyD", "Space", "ShiftLeft", "ShiftRight"].includes(e.code)) return;
+    // WASD advance/strafe, Q/E down/up — physical codes, so layout-independent
+    // (WASD+QE is ZQSD+AE on AZERTY). Shift is not a fly key: it boosts speed.
+    this._shiftDown = e.shiftKey;
+    if (!["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE"].includes(e.code)) return;
     if (down) {
       if (this.flyGate && !this.flyGate()) return; // e.g. another panel is hovered
       // Chorded shortcuts are not fly input: on AZERTY, Ctrl+Z (undo) is the
@@ -533,7 +529,6 @@ export class Viewer {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target;
       if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
-      if (e.code === "Space") e.preventDefault(); // don't scroll the page or click a focused button
       if (!this._rafPending) this._clock.getDelta(); // discard idle time — no jump on the first step
       this._flyKeys.add(e.code);
       this._schedule(); // the loop is parked while idle — restart it for the fly motion
@@ -559,16 +554,14 @@ export class Viewer {
     if (has("KeyS")) dir.sub(fwd);
     if (has("KeyD")) dir.add(right);
     if (has("KeyA")) dir.sub(right);
-    if (has("Space")) dir.add(up); // Space up
-    // Shift down — but only when no mouse button is held, so Shift+click / drag
-    // stays a host selection modifier rather than sinking the camera.
-    if ((has("ShiftLeft") || has("ShiftRight")) && !this._pointerDown) dir.sub(up);
+    if (has("KeyE")) dir.add(up); // rerun-style: E up, Q down
+    if (has("KeyQ")) dir.sub(up);
     if (dir.lengthSq() === 0) return; // opposite keys cancel out
     // Speed follows the camera-to-pivot distance (rerun's behaviour): zoomed
     // in close you fly slow and precise, zoomed out you cross the scene fast.
     // The floor keeps a camera parked on the pivot able to leave.
     const dist = this.camera.position.distanceTo(this.controls.target);
-    const speed = Math.max(dist, this._radius * 0.02) * 0.6;
+    const speed = Math.max(dist, this._radius * 0.02) * (this._shiftDown ? 1.5 : 0.5);
     // Cap dt: after the tab was backgrounded the first delta can be huge, and
     // one giant step would teleport the camera out of the scene.
     dir.normalize().multiplyScalar(speed * Math.min(dt, 0.1));
@@ -582,19 +575,26 @@ export class Viewer {
   // triggers it (0=left, 1=middle, 2=right; -1 disables the action). Orbit:
   // BUTTON to the ACTION enum (null disables the button).
   // Box mode frees LEFT for the rubber band, so the camera moves on MIDDLE (pan)
-  // and RIGHT (orbit). Shift no longer alters this map — it is a fly key now —
-  // so the middle-mouse pan is always available for the sideways nudge.
-  _applyMouseButtons() {
+  // and RIGHT (orbit); holding Shift turns that RIGHT-drag into a pan too.
+  _applyMouseButtons(shift) {
     if (this._controlStyle === "orbit") {
       const M = THREE.MOUSE;
-      this.controls.mouseButtons = this._boxMode
-        ? { LEFT: null, MIDDLE: M.PAN, RIGHT: M.ROTATE }
-        : { LEFT: M.ROTATE, MIDDLE: M.DOLLY, RIGHT: M.PAN };
+      if (!this._boxMode) {
+        this.controls.mouseButtons = { LEFT: M.ROTATE, MIDDLE: M.DOLLY, RIGHT: M.PAN };
+      } else if (shift) {
+        this.controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: M.PAN };
+      } else {
+        this.controls.mouseButtons = { LEFT: null, MIDDLE: M.PAN, RIGHT: M.ROTATE };
+      }
       return;
     }
-    this.controls.mouseButtons = this._boxMode
-      ? { LEFT: 2, MIDDLE: -1, RIGHT: 1 }
-      : { LEFT: 0, MIDDLE: 1, RIGHT: 2 }; // rotate / zoom / pan
+    if (!this._boxMode) {
+      this.controls.mouseButtons = { LEFT: 0, MIDDLE: 1, RIGHT: 2 }; // rotate / zoom / pan
+    } else if (shift) {
+      this.controls.mouseButtons = { LEFT: -1, MIDDLE: -1, RIGHT: 2 }; // shift+right → pan
+    } else {
+      this.controls.mouseButtons = { LEFT: 2, MIDDLE: -1, RIGHT: 1 }; // right → orbit, middle → pan
+    }
   }
 
   // Draw a translucent wireframe cube around each voxel centre (one merged
