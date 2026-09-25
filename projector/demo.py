@@ -1,20 +1,20 @@
 """Synthetic multi-sequence source for demos/tests — no external data.
 
-"Natural terrain" scene: the ego drives forward over Perlin-noise hills scattered
-with trees and patchy grass (`terrain.py` builds the world as a heightfield mesh);
-`lidar` and `camera_front` are then *simulated* against that one consistent 3D
-world — a real ray scan and a real ray-marched render — not hand-painted. Channels:
+A "driving" scene built on the shared procedural world engine
+(:mod:`projector.terrain`): the ego drives forward over Perlin-noise hills
+scattered with trees and patchy grass, and every sensor is *simulated* against
+that one 3D world — a real ray scan and a real ray-marched render, not
+hand-painted. The lidar's own material ids become a traversability ground truth,
+so the labelling / confusion features have something real to chew on. Channels:
 
-- `lidar`         : ray-cast scan of the terrain + trees, (N, 4) [x, y, z, intensity]
+- `lidar`         : ray-cast scan of the terrain + trees, (N, 4) [x, y, z, intensity], ego frame
 - `camera_front`  : ray-marched render of the same scene, (H, W, 3) uint8
-- `pose`          : (4, 4) ego pose per frame — rides the terrain elevation
-- `gt`            : LABELS of `lidar` — 0 unlabeled / 1 traversable (ground+grass) /
-                     2 obstacle (tree trunk/canopy)
-- `pred`          : LABELS of `lidar` — a noisy binary trav/not-trav "model",
-                     for the confusion / precision-recall showcase
+- `pose`          : (4, 4) ego pose per frame (rides the terrain elevation)
+- `gt`            : LABELS of `lidar` — ground/grass → traversable, trunk/canopy → obstacle
+- `pred`          : LABELS of `lidar` — `gt` with noise (a fake model, for confusion)
 
-Two sequences with different terrain character (open meadow vs. denser treeline), so
-the sequence picker has something to switch between.
+Two sequences with a different character — an open meadow and a hillier, denser
+treeline — so the sequence picker has something to switch between.
 """
 
 from __future__ import annotations
@@ -25,6 +25,10 @@ from . import terrain
 from .adapters.array_source import ArraySource
 from .core.labels import LabelClass, LabelSet
 from .core.source import ChannelKind, ChannelSpec
+
+CAM_H, CAM_W = 200, 360
+LIDAR_MOUNT = 1.8
+CAM_FRONT_PLACEMENT = np.array([1.6, 0.0, 1.5], np.float32)
 
 GT_LABELS = LabelSet(
     [
@@ -43,41 +47,56 @@ PRED_LABELS = LabelSet(
     ignore_id=-1,
 )
 
-CAM_H, CAM_W = 180, 320
-LIDAR_MOUNT = 1.8  # meters above ground, matches the `lidar` ChannelSpec placement
-CAM_PLACEMENT = np.array([1.6, 0.0, 1.5], np.float32)  # meters, ego-relative
+
+def _labels_from_materials(materials: np.ndarray, rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    """Scan material ids -> a traversability ground truth and a noisy fake prediction.
+
+    ``ground``/``grass`` are traversable, ``trunk``/``canopy`` are obstacles; a few
+    points are dropped to ``unlabeled`` and the prediction flips ~12 % of the labels.
+    """
+    gt = np.where(materials == terrain.MISS, 0, np.where(materials <= terrain.GRASS, 1, 2)).astype(np.int32)
+    gt[rng.random(len(gt)) < 0.05] = 0  # a few unlabeled points
+    pred = (gt == 1).astype(np.int32)  # binary traversable / not
+    flip = rng.random(len(pred)) < 0.12
+    pred[flip] = 1 - pred[flip]
+    return gt, pred
 
 
 def _make_sequence(
-    n_frames: int, speed: float, seed: int, n_trees: int, hill_amplitude: float, rng: np.random.Generator
+    n_frames: int,
+    seed: int,
+    rng: np.random.Generator,
+    *,
+    speed: float = 1.2,
+    n_trees: int | None = None,
+    hill_amplitude: float = 2.8,
 ) -> list[dict[str, np.ndarray]]:
-    span = speed * (n_frames - 1)
+    span = speed * max(n_frames - 1, 1)
     scene = terrain.build_scene(
         seed=seed,
         x_range=(-8.0, span + 26.0),
         y_range=(-22.0, 22.0),
-        n_trees=n_trees,
+        n_trees=n_trees if n_trees is not None else max(3, min(9, n_frames // 4 + 3)),
         hill_amplitude=hill_amplitude,
+        grid_shape=(192, 192),
     )
 
     frames: list[dict[str, np.ndarray]] = []
     for t in range(n_frames):
         ex = speed * t
         ez = float(scene.field.height(np.array([ex]), np.array([0.0]))[0])
+        ego = np.array([ex, 0.0, ez])
 
-        lidar_pos = np.array([ex, 0.0, ez + LIDAR_MOUNT])
-        cam_pos = np.array([ex, 0.0, ez]) + CAM_PLACEMENT
+        points_world, materials = terrain.scan_lidar(
+            scene, ego + np.array([0.0, 0.0, LIDAR_MOUNT]), rng, n_rings=26, n_az=480, march_steps=36
+        )
+        lidar = points_world.copy()
+        lidar[:, :3] -= ego  # world -> ego frame
+        gt, pred = _labels_from_materials(materials, rng)
 
-        points, materials = terrain.scan_lidar(scene, lidar_pos, rng)
-        image = terrain.render_camera(scene, cam_pos, CAM_H, CAM_W, rng=rng)
-
-        gt = np.where(materials <= terrain.GRASS, 1, 2).astype(np.int32)  # traversable / obstacle
-        gt[rng.random(len(gt)) < 0.05] = 0  # a few unlabeled points, as a real labeling would have
-
-        # Fake model: the ground truth with ~12% of the labeled points flipped.
-        pred = np.where(gt == 1, 1, 0).astype(np.int32)
-        flip = rng.random(len(pred)) < 0.12
-        pred[flip] = 1 - pred[flip]
+        camera_front = terrain.render_camera(
+            scene, ego + CAM_FRONT_PLACEMENT, CAM_H, CAM_W, march_steps=34, rng=rng
+        )
 
         pose = np.eye(4, dtype=np.float32)
         pose[0, 3] = ex
@@ -85,8 +104,8 @@ def _make_sequence(
 
         frames.append(
             {
-                "lidar": points,
-                "camera_front": image,
+                "lidar": lidar.astype(np.float32),
+                "camera_front": camera_front,
                 "pose": pose,
                 "gt": gt,
                 "pred": pred,
@@ -109,7 +128,7 @@ def make_demo_source(seed: int = 0) -> ArraySource:
             ChannelKind.IMAGE,
             np.dtype("uint8"),
             (CAM_H, CAM_W, 3),
-            placement=CAM_PLACEMENT,
+            placement=CAM_FRONT_PLACEMENT,
         ),
         ChannelSpec("pose", ChannelKind.POSE, np.dtype("float32"), (4, 4)),
         ChannelSpec("gt", ChannelKind.LABELS, np.dtype("int32"), (None,), of="lidar", labelset=GT_LABELS),
@@ -120,8 +139,8 @@ def make_demo_source(seed: int = 0) -> ArraySource:
         specs,
         {
             # open meadow: gentle relief, a handful of scattered trees
-            "seq_a": _make_sequence(40, 1.15, seed=seed + 1, n_trees=5, hill_amplitude=2.2, rng=rng),
+            "seq_a": _make_sequence(40, seed, rng, speed=1.15, n_trees=5, hill_amplitude=2.2),
             # treeline: hillier, denser trees
-            "seq_b": _make_sequence(28, 1.35, seed=seed + 2, n_trees=9, hill_amplitude=4.2, rng=rng),
+            "seq_b": _make_sequence(28, seed + 1, rng, speed=1.35, n_trees=9, hill_amplitude=4.2),
         },
     )

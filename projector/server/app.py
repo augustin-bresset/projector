@@ -25,13 +25,15 @@ from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .. import web_dir
 from ..adapters.array_source import ArraySource
 from ..engine.player import Player
 from .files import list_dir, probe
 from .protocol import channelspec_to_dict, frame_to_dict, pack_frame, sequencespec_to_dict
 
-# Web front (vanilla, zero build) served as-is — packaged at `projector/web/`.
-WEB_DIR = Path(__file__).resolve().parents[1] / "web"
+# Web front (vanilla, zero build); resolved via the accessor consumers use, so
+# projector dogfoods the same `web_dir()` path it ships for the other tools.
+WEB_DIR = Path(web_dir())
 
 
 def create_app(

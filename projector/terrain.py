@@ -1,8 +1,9 @@
-"""Procedural natural terrain — the scene behind `projector demo`.
+"""Procedural natural terrain — the scene behind `projector demo` (splasher's demo
+runs on the same world engine).
 
 One consistent 3D world (Perlin-noise hills, scattered trees, patchy grass) is built
-once per sequence; the lidar and camera channels are then *derived* from it — a real
-ray scan and a real ray-marched render — instead of hand-painted fake sensor data.
+once; the lidar and camera channels are then *derived* from it — a real ray scan and
+a real ray-marched render — instead of hand-painted fake sensor data.
 
 Pure numpy (the demo ships with the core install, no extra dependency). The
 heightfield grid doubles as the terrain mesh: a regular grid IS a mesh (each cell is
